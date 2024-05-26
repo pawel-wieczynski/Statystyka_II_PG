@@ -1,0 +1,789 @@
+---
+title: "Uogólnione modele addytywne"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, plotly, splines, earth, caret, gam)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Zarys problemu
+
+Dane `mcycle` dotyczą serii pomiarów przyspieszenia głowy w symulowanym wypadku motocyklowym, wykorzystywanych do testowania kasków zderzeniowych. Zmienne to:
+
+-   $X$ - czas po uderzeniu mierzony w milisekundach
+
+-   $Y$ - przyspieszenie mierzone jako siła na jednostkę masy
+
+```{r}
+data(mcycle, package = 'MASS')
+ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point()
+```
+
+Zależność ta nie jest liniowa. Zastąpimy zatem zmienną $X$ jest transformacjami $h_m(X): \mathbb{R}^d \rightarrow \mathbb{R}$, gdzie $m = 1, \dots M$, a następnie w nowej przestrzeni dopasujemy model liniowy postaci:
+
+$$
+f(X) = \sum_{m=1}^M \beta_mh_m(X)
+$$
+
+Zbiór funkcji $\mathcal{B} = \lbrace h_m(X) \rbrace_{m=1}^M$ nazywamy *bazą funkcyjną*. Do tej pory naszą bazą były transformacje postaci $h_m(X) = X_m$ dla $m = 1, \dots d$. Teraz rozszerzymy naszą bazę o dodatkowe funkcje.
+
+## Regresja wielomianowa
+
+Dodajmy do bazy potęgi drugiego stopnia oraz czynniki interakcji zmiennych objaśniających:
+
+$$
+\mathcal{B} = \lbrace 1, X_j, X_j^2, X_j X_k \rbrace_{j=1}^d
+$$
+
+Taka baza bardzo szybko się rozrasta. Aby otrzymać pełne wielomiany $k$-tego stopnia, baza musi posiadać $d^k$ zmiennych. W praktyce rzadko przyjmujemy $k$ większe niż $4$, ponieważ wielomiany wyższego stopnia mogą przyjmować zbyt elastyczne kształty, co może prowadzić do przetrenowania modelu.
+
+```{r}
+df_poly_models = tibble(
+  Degree = 1:5
+  , RSq = NA
+) %>%
+  mutate(Formula = str_c('y ~ poly(x, ', Degree, ')')) %>%
+  mutate(Color = c(
+    '#F8766D'
+    , '#7CAE00'
+    , '#00BFC4'
+    , '#C77CFF'
+    , '#619CFF')
+  )
+
+p1 = ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point()
+
+for (i in 1:nrow(df_poly_models)) {
+  
+  model = lm(
+    as.formula(df_poly_models$Formula[i])
+    , data = mcycle %>% mutate(x = times, y = accel)
+  )
+  
+  df_poly_models$RSq[i] = cor(model$fitted.values, mcycle$accel)^2
+  
+  p1 = p1 +
+    geom_smooth(
+      method = 'lm'
+      , se = FALSE
+      , formula = df_poly_models$Formula[i]
+      , color = df_poly_models$Color[i]
+    )
+
+}
+          
+p1
+```
+
+### Czynnik interakcji
+
+```{r}
+data("ChickWeight")
+
+ChickWeight %>% 
+  filter(Diet == '1' | Diet == '4') %>%
+  # ggplot(aes(x = Time, y = weight)) +
+  ggplot(aes(x = Time, y = weight, color = Diet)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE)
+
+model_chicken_1 = lm(
+  weight ~ Time
+  , data = ChickWeight %>% 
+    filter(Diet == '1' | Diet == '4')
+)
+
+model_chicken_2 = lm(
+  weight ~ Time + Time:Diet
+  , data = ChickWeight %>% 
+    filter(Diet == '1' | Diet == '4')
+)
+
+summary(model_chicken_1)
+summary(model_chicken_2)
+```
+
+## Funkcje schodkowe
+
+Regresja wielomianowa nakłada nieliniową strukturę na dane w sposób globalny. Możemy jednak spróbować podzielić przestrzeń zmiennych objaśniających $X$ na rozłączne podzbiory i na każdym z nich dopasować lokalną strukturę (najczęściej metodą najmniejszych kwadratów).. Najprostszym przykładem są funkcje stałe:
+
+$$
+\mathcal{B} = \lbrace I(\xi_{m-1} \leq X < \xi_{m})\rbrace_{m=2}^M
+$$
+
+$$
+f(X) = \sum_{m=2}^M c_m \ I(\xi_{m-1} \leq X < \xi_m)
+$$
+
+Na takiej zasadzie działają drzewa regresyjne, które już poznaliśmy. Możemy ponownie rozszerzyć bazę i w poszczególnych przedziałach dopasować modele liniowe lub wielomianowe (dla modelu liniowego $|\mathcal{B} | = 2M$). Dla modeli liniowych postaci $y = \beta_0 + \beta_1 x + \epsilon$ otrzymamy pary współczynników $\beta_{0,m}, \beta_{1,m}$ w każdym z przedziałów.
+
+```{r}
+bins = seq(0, 60, by = 10)
+
+df_step = tibble(
+  Left = bins[1:length(bins) - 1]
+  , Right = bins[2:length(bins)]
+  # Dla stałej
+  , Alpha = NA
+  # Dla modelu liniowego
+  , Beta0 = NA
+  , Beta1 = NA
+)
+
+for (i in 1:(length(bins) - 1)) {
+  
+  # Filtrowanie danych należących do przedziału
+  mcycle_filtered = mcycle %>%
+    filter(times >= df_step$Left[i] & times < df_step$Right[i])
+  
+  # Model stały
+  model = lm(accel ~ 1, data = mcycle_filtered)
+  df_step$Alpha[i] = model$coefficients[1]
+  
+  # Model liniowy
+  model = lm(accel ~ times, data = mcycle_filtered)
+  df_step$Beta0[i] = model$coefficients[1]
+  df_step$Beta1[i] = model$coefficients[2]
+  
+}
+
+# Policzenie punktów krańcowych do wykresu
+df_step = df_step %>%
+  rowwise() %>%
+  mutate(
+    Left_Y = Beta0 + Beta1 * Left
+    , Right_Y = Beta0 + Beta1 * Right
+  )
+
+ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point() +
+  geom_segment(data = df_step, mapping = aes(
+    x = Left, xend = Right
+    , y = Alpha, yend = Alpha
+    , color = 'Step function'
+  ), size = 1.25) +
+  geom_segment(data = df_step, mapping = aes(
+    x = Left, xend = Right
+    , y = Left_Y, yend = Right_Y
+    , color = 'Linear function'
+  ), size = 1.25) +
+  labs(color = '')
+```
+
+## Funkcje sklejane (splajny)
+
+Problemem powyższych modeli jest brak ciągłości na krańcach przedziałów. Aby uzyskać ciągłość musimy nałożyć ograniczenia postaci:
+
+$$
+f(\xi_{m}^-) = f(\xi_{m}^+)
+$$
+
+dla $m = 2, \dots M$, co oznacza, że:
+
+$$
+\beta_{0, m-1} + \xi_{m} \beta_{1, m-1} = \beta_{0, m} + \xi_m \beta_{1, m}
+$$
+
+Funkcje bazowe, które odpowiadają powyższym ograniczeniom mają postać:
+
+$$
+h(X) = (X - \xi )_+ = 
+(x - \xi) \ I\lbrace x > \xi \rbrace = 
+\begin{cases}
+x - \xi \quad \text{jeśli} \ x>\xi \\
+0 \quad \quad \ \ \ \text{jeśli} \ x\leq \xi
+\end{cases}
+$$
+
+W literaturze występują one pod nazwą odciętych funkcji wielomianowych (ang. *hinge function* lub *truncated power basis function)*. Wówczas model przyjmuje postać:
+
+$$
+f(X) = \beta_0 + \beta_1 (X-\xi_1)_+ + \dots + \beta_M (X- \xi_M)_+
+$$
+
+```{r}
+mcycle_hinge = mcycle %>% select(times, accel)
+knots = seq(0, 50, by = 10)
+
+# Dodajemy funkcje bazowe
+for (i in 1:length(knots)) {
+  mcycle_hinge = mcycle_hinge %>%
+    mutate(!!paste0('times_', i) := ifelse(
+      times > knots[i]
+      , times - knots[i]
+      , 0
+    ))
+}
+
+# Wizualizacja funkcji bazowych
+mcycle_hinge %>%
+  pivot_longer(
+    cols = starts_with('times_')
+    , names_to = 'variable'
+    , values_to = 'value'
+  ) %>%
+  ggplot(aes(x = times, y = accel)) +
+  geom_point() +
+  geom_line(aes(y = value, color = variable), size = 1)
+
+# Dopasowanie modelu
+model_spline_linear = lm(
+  accel ~ .-times
+  , data = mcycle_hinge
+)
+
+summary(model_spline_linear)
+
+# Prognoza
+mcycle_hinge = mcycle_hinge %>%
+  mutate(y_hat = predict(model_spline_linear, .))
+
+# Wizualizacja modelu
+ggplot(mcycle_hinge, aes(x = times)) +
+  geom_point(aes(y = accel)) +
+  geom_line(aes(y = y_hat), color = '#F8766D', size = 1)
+```
+
+W bibliotece `splines` mamy funkcję `bs`, która automatycznie tworzy bazę dla splajnów wielomianowych.
+
+```{r}
+model_bs_linear = lm(
+  accel ~ bs(
+    x = times
+    , degree = 1
+    , knots = seq(10, 50, by = 10)
+    # , knots = c(30)
+  )
+  , data = mcycle
+)
+
+summary(model_bs_linear)
+
+mcycle = mcycle %>%
+  mutate(y_hat_bs_linear = predict(model_bs_linear))
+
+ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point() +
+  geom_line(
+    aes(x = times, y = y_hat_bs_linear)
+    , color = '#F8766D'
+    , linewidth = 1
+  )
+```
+
+Problemem powyższego modelu jest brak różniczkowalności w węzłach $\xi_m$. Aby *wygładzić* model musimy nałożyć kolejne ograniczenia dotyczące ciągłości, ale tym razem na pochodne.
+
+**Splajnem stopnia** $p$ z węzłami $\min(x) = \xi_0 < \xi_1 < \dots < \xi_M = \max(x)$ nazywamy funkcję ktróra:
+
+-   w każdym z przedziałów jest wielomianem stopnia $p-1$
+
+-   ma ciągłe pochodne do stopnia $p-2$ włącznie.
+
+Baza splajnów stopnia $p$ składa się z następujących funkcji bazowych:
+
+$$
+h_i(X) = X^{i-1} \quad \text{dla} \ i = 1, \dots p \\
+h_{p + j} = (X - \xi_j)_+^{p-1} \quad \text{dla} \ j = 1 \dots, M
+$$
+
+### Splajny kubiczne (*cubic splines*)
+
+W praktyce najczęściej stosowane stopnie $p$ są od $1$ do $4$:
+
+-   splajny stopnia $1$ - funkcje schodkowe
+
+-   splajny stopnia $2$ - funkcje liniowe
+
+-   splajny stopnia $3$ - funkcje kwadratowe
+
+-   splajny stopnia $4$ - tzw. splajny kubiczne (ang. *cubic splines*)
+
+Baza splajnów kubicznych składa się z następujących funkcji:
+
+$$
+\mathcal{B} = \lbrace 1, X, X^2, X^3, (X - \xi_1)_+^3, \dots , (X - \xi_M)_+^3 \rbrace
+$$
+
+oraz posiada ciągłe pochodne pierwszego i drugiego rzędu.
+
+```{r}
+model_bs_cubic = lm(
+  accel ~ bs(
+    x = times
+    , degree = 3
+    , knots = seq(10, 50, by = 10)
+    # , knots = c(30)
+  )
+  , data = mcycle
+)
+
+summary(model_bs_cubic)
+
+mcycle = mcycle %>%
+  mutate(y_hat_bs_cubic = predict(model_bs_cubic))
+
+ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point() +
+  geom_line(
+    aes(x = times, y = y_hat_bs_cubic)
+    , color = '#F8766D'
+    , linewidth = 1
+  ) -> p2
+
+p2
+```
+
+Na wykresach możemy zauważyć, że splajny (jak i wielominany) posiadają bardzo dużą wariancję na brzegach przedziału $X$. Aby temu zapobiec definiujemy naturalne splajny kubiczne (ang. *natural cubic splines*) nakładając dodatkowy warunek: ekstrapolując poza dziedzinę $X$ powinniśmy otrzymać funkcję liniową:
+
+$$
+\beta_2 = \beta_3 = 0 \\
+\sum \beta_k = 0 \\
+\sum \beta_k \xi_k = 0
+$$
+
+co daje nam bazę naturalnych splajnów kubicznych:
+
+$$
+\mathcal{B} = \lbrace N_1(x) = 1, N_2(x) = x, N_{i+2} (x) = d_i(x) - d_{k+1}(x) \rbrace
+$$
+
+gdzie $i = 1, \dots k-2$ oraz
+
+$$
+d_i(x) = \frac{(x - \xi_i)_+^2 - (x - \xi_k)_+^3}{\xi_k - \xi_i}
+$$
+
+Wyprowadzenie powyższych wzorów oraz dowody: <https://stats.stackexchange.com/questions/172217/why-are-the-basis-functions-for-natural-cubic-splines-expressed-as-they-are-es>
+
+```{r}
+model_ns_cubic = lm(
+  accel ~ ns(
+    x = times
+    , knots = seq(10, 50, by = 10)
+  )
+  , data = mcycle
+)
+
+summary(model_ns_cubic)
+
+mcycle = mcycle %>%
+  mutate(y_hat_ns_cubic = predict(model_ns_cubic))
+
+p2 = p2 +
+  geom_line(
+    data = mcycle
+    , mapping = aes(x = times, y = y_hat_ns_cubic)
+    , color = '#7CAE00'
+    , linewidth = 1
+  )
+
+p2
+```
+
+#### Stopnie swobody
+
+Możemy je interpretować jako pewien *"budżet"* który wykorzystujemy, gdy liczymy kolejne statystyki z próby. Na przykład dysponując $n$ elementową próbką, gdy oszacujemy średnią, to zużywamy jeden stopień swobody i zostaje nam $n-1$ stopni swobody do oszacowania wariancji.
+
+Zastanówmy się jak interpretujemy stopnie swobody w kontekście regresji. Jeśli mamy $n=2$ i estymujemy model liniowy, czyli parametry $\beta_0$ oraz $\beta_1$, czyli zużywamy wszystkie stopnie swobody. Model jest idealnie dopasowany. Gdybyśmy chcieli powiększyć model o wyraz $\beta_2 x^2$, to nie istnieje jednoznaczne rozwiązanie OLS (można o tym myśleć jak o próbie dopasowania płaszczyzny do dwóch punktów zanurzonych w przestrzeni trójwymiarowej - wiele płaszczyzn o różnych kątach nachylenia osiagnie ten sam błąd RSS wynoszący $0$).
+
+Dzieląc dziedzinę $X$ na $k+1$ węzłów, możemy dopasować $k$ wielomianów $p$-tego stopnia. Zużywamy wówczas $k (p+1)$ stopni swobody. Jednak każde ograniczenie *"uwalnia"* nam stopnie swobody. W splajnach kubicznych mamy:
+
+-   $4k$ parametrów do estymacji
+
+-   $k-1$ warunków na ciągłość pochodnych pierwszego rzędu
+
+-   $k-1$ warunków na ciągłość pochodnych drugiego rzędu
+
+Daje nam to $4k - 2(k-1) = 2k+2$ stopni swobody. Za pomocą stopni swobody możemy zatem definiować złożoność modelu. Zauważmy, że w funkcjach `splines::bs` oraz `splines::ns` możemy podawać alternatywnie parametry `knots` lub `df`.
+
+### Algorytm MARS
+
+MARS (ang. *multivariate adaptive regression splines*) przeszukuje przestrzeń $X$ w celu znalezienia najlepszych miejsc do utworzenia węzłów, analogicznie jak to ma miejsce w przypadku drzew decyzyjnych z poprzednich zajęć. Domyślnie, kolejne węzły są dodawane dopóki współczynnik determinancji $R^2$ nie wzrośnie o $0.001$. Następnie, podobnie jak w przypadku drzew decyzyjnych, następuje przycinanie modelu: węzły, które nie przyczynią się do istotnej poprawy błędy RMSE są usuwane z modelu. Mamy zatem dwa hiperparametry modelu, które możemy optymalizować metodą walidacji krzyżowej:
+
+-   `degree` - stopień wielomianów
+
+-   `nprune` - maksymalna ilość współczynników modelu (postaci *hinge*) łącznie z wyrazem wolnym
+
+Implementacja algorytmu w bibliotece `earth`:
+
+```{r}
+model_mars = earth(
+  accel ~ times
+  , data = mcycle
+)
+
+summary(model_mars)
+
+predict(model_mars, mcycle)
+
+df_grid = tibble(
+  times = seq(0, 60, by = 0.001)
+) %>%
+  mutate(accel = predict(model_mars, .) %>% as.numeric())
+
+ggplot(mcycle, aes(x = times, y = accel)) +
+  geom_point() +
+  geom_point(data = df_grid, mapping = aes(x = times, y = accel))
+```
+
+Walidacja krzyżowa do optymalizacji hiperparametrów:
+
+```{r}
+set.seed(213)
+model_mars_cv = train(
+  accel ~ times
+  , data = mcycle
+  , method = 'earth'
+  , trControl = trainControl(method = 'cv', number = 5)
+  , tuneGrid = expand.grid(
+    degree = c(1:5)
+    , nprune = seq(2, 20, by = 2)
+  )
+)
+
+ggplot(model_mars_cv) -> p3
+plotly::ggplotly(p3)
+model_mars_cv$bestTune
+
+model_mars_cv = earth(
+  accel ~ times
+  , data = mcycle
+  , nprune = model_mars_cv$bestTune$nprune
+)
+
+predict_grid = tibble(times = seq(0, max(mcycle$times), by = 0.1)) %>%
+  mutate(Predicted = predict(model_mars_cv, .)[, 1])
+
+ggplot() +
+  geom_point(
+    data = mcycle
+    , mapping = aes(x = times, y = accel)
+  ) +
+  geom_point(
+    data = predict_grid
+    , mapping = aes(x = times, y = Predicted)
+    , color = '#F8766D'
+    , size = 1
+  )
+
+summary(model_mars_cv)
+```
+
+### Splajny wygładzające (*smooting splines*)
+
+Aby ominąć problem wyboru węzłów $\xi_i$ możemy wszystkie dostępne dane treningowe potraktować jako węzły. Musimy jednak nałożyć pewną karę na funkcję straty, gdyż minimalizując kwadratową funkcję straty doszłoby do interpolacji danych treningowych, czyli przetrenowania modelu (ponadto kształt takiej funkcji byłby bardzo *"poszarpany"*, a my wolimy funkcje gładkie). Zdefiniujmy zatem następuującą funkcję straty:
+
+$$
+\sum_{i=1}^n \left( y_i - f(x_i) \right)^2 + \lambda \int \left| \frac{d^mf}{dt^m} \right|^2 dt \longrightarrow \min
+$$
+
+gdzie $f$ należy do przestrzeni funkcyjnej
+
+$$
+\mathcal{H} = \lbrace f: \int \left| \frac{d^mf}{dt^m} \right|^2  dt < \infty \rbrace
+$$
+
+Od stopnia pochodnych zależy rodzaj modelowanych splajnów:
+
+-   przyjmując $m=1$ otrzymamy regresję przedziałami liniową
+
+-   przyjmując $m=2$ otrzymamy splajny kubiczne
+
+-   przyjmując $m=3$ otrzymamy splajny wielomianami 5-tego stopnia (ang. *quintic splines*).
+
+Dowód, że dla $m=2$ minimalizacja powyższej funkcji straty daje nam naturalny splajn kubiczny: <https://yuhangzhou88.github.io/ESL_Solution/ESL-Solution/5-Basis%20Expansions%20and%20Regularization/ex5-07/>
+
+Parametr $\lambda \in (0, \infty)$ nazywamy parametrem wygładzania (ang. *smoothing parameter*). Możemy go interpretować jako karę za zbyt *"poszarpaną"* funkcję:
+
+-   gdy $\lambda = 0$, to dojdzie do interpolacji danych treningowych
+
+-   gdy $\lambda = \infty$, to otrzymamy estymator OLS (ponieważ pochodna musi wynosić zero jeśli chcemy minimalizować to wyrażenie).
+
+Zatem im większa wartość parametru $\lambda$, tym bardziej gładką funkcję otrzymamy.
+
+Funkcja `smooth.spline` dopasowuje splajny kubiczne. Sprawdźmy jak wygląda kształt funkcji w zalezności od różnych wartości parametru $\lambda$.
+
+```{r}
+# Inicjalizacja obiektów do przechowywania wyników
+lambdas = c(0.00001, 0.001, 0.1)
+predict_grid = tibble(times = seq(0, max(mcycle$times), by = 0.1))
+
+for (i in 1:length(lambdas)) {
+  
+  # Dopasowanie modelu
+  model_smooth = smooth.spline(
+    x = mcycle$times
+    , y = mcycle$accel
+    , lambda = lambdas[i]
+  )
+  
+  # Prognoza na siatce
+  y_hat = predict(model_smooth, predict_grid$times)$y
+  
+  # Zapisanie prognoz
+  predict_grid = predict_grid %>%
+      mutate(accel = y_hat, lambda = lambdas[i])
+  
+  if(i == 1) {
+    results = predict_grid
+  } else {
+    results = rbind(results, predict_grid)
+  }
+  
+}
+
+ggplot() +
+  geom_point(
+    data = mcycle
+    , mapping = aes(x = times, y = accel)
+  ) +
+  geom_point(
+    data = results
+    , mapping = aes(x = times, y = accel, color = as.factor(lambda))
+    , size = 1
+  ) +
+  theme(
+    legend.position = c(0.8, 0.2)
+    , legend.background = element_blank()
+  ) +
+  guides(colour = guide_legend(override.aes = list(size = 5))) +
+  labs(color = 'lambda')
+```
+
+Oznaczmy bazę naturalnych splajnów kubicznych
+
+$$
+\mathcal{B} = \lbrace N_j \rbrace_{j=1}^M
+$$
+
+wówczas splajn wygładzający ($m=2$) możemy przedstawić jako:
+
+$$
+\hat{f}(x) = \sum_{j=1}^M \beta_j N_j(x)
+$$
+
+Oznaczmy macierz $\mathbf{N}$ wymiaru $n \times M$ gdzie w $i$-tym wierszu i $j$-tej kolumnie mamy $N_j(x_i)$. Oznaczmy przez $\Omega$ macierz wymiaru $M \times M$ gdzie w $j$-tym wierszu i $k$-tej kolumnie mamy
+
+$$
+\int \frac{d^2N_j}{dt^2} \frac{d^2N_k}{dt^2} dt
+$$
+
+Wówczas funkcję straty możemy zapisać macierzowo:
+
+$$
+L = (y - \mathbf{N} \beta)^\intercal (y - \mathbf{N} \beta) + \lambda \beta^\intercal \Omega \beta
+$$
+
+Można tu dostrzec analogię do regresji grzbietowej. Ten model bywa nazywany uogólniony modelem regresji grzbietowej (*generalized ridge regression).* Rozwiązaniem jest:
+
+$$
+\hat{\beta} = (\mathbf{N}^\intercal\mathbf{N} + \lambda \Omega)^{-1} \mathbf{N}^\intercal y = S_{\lambda} y
+$$
+
+Na macierz $S_\lambda$ możemy patrzeć jak na odpowiednik macierzy pseudoodwrotnej $X^\dagger$ z regresji liniowej. Macierz $S_\lambda$ nazywamy macierzą wygładzania(*smoother matrix*). Ślad tej macierzy nazywamy efektywnymi stopniami swobody.
+
+## Regresja lokalna
+
+Algorytm LOESS lub LOWESS (*locally weighted scatterplot smooting*):
+
+1.  Dla każdego punktu $x_0$ wybieramy $k$ najbliższych punktów $x_i$ ze zbioru treningowego.
+2.  Każdemu z najbliższych punktów przypisujemy wagę $K(x_i, x_0)$ w taki sposób, aby waga malała wraz ze wzrostem odległości od punktu $x_0$.
+3.  Dopasowujemy ważony model regresji w otoczeniu punktu $x_0$.
+4.  Prognozujemy $\hat{y_0} = \hat{f}(x_0)$.
+5.  Powtarzam kroki 1-4 dla wszystkich punktów w zbiorze treningowym (lub na zadanej siatce punktów w dziedzinie $X$).
+
+Praktyczne problemy to:
+
+-   wybór $k$ punktów w pobliżu punktu $x_0$ lub równoważne wybór szerekości otoczenia punktu $x_0$ - jest to hiperparametr modelu, który możemy optymalizować
+
+-   wybór miary odległości - najczęściej przyjmuje wartość bezwzględną $d(x_i, x_0) = |x_i - x_0|$
+
+-   wybór funkcji $K(x_i, x_0)$ - bardzo częstym wyborem jest tzw. funkcja *tri-cube*:
+
+    $$
+    K(t) = \begin{cases}
+    \left( 1- |t|^3 \right)^3 \quad \text{jeśli} \ |t| \leq 1 \\
+    0 \quad \quad \quad \quad \quad  \text{jeśli} \ |t| > 1
+    \end{cases}
+    $$
+
+```{r}
+# Tworzymy siatkę X oraz wektor do przechowywania y
+x = seq(0, 60, by = 0.1)
+y_hat = numeric(length(x))
+
+k = 50 # otoczenie x_0
+
+for (i in 1:length(x)) {
+  
+  x0 = x[i]
+  
+  # Liczymy odległości od x_0 do wszystkich punktów
+  dist = abs(mcycle$times - x0)
+  
+  # Sortujemy odległosci
+  sorted_indices = order(dist)
+  
+  # Wybieramy k najblizszych punktow
+  k_indices = sorted_indices[1:k]
+  
+  # Przypisanie wag za pomocą funkcji tri-cube
+  weights = numeric(k)
+  for (j in 1:k) {
+    weights[j] = (1 - (dist[k_indices[j]] / max(dist))^3)^3
+  }
+  
+  # Dopasowanie modelu regresji liniowej w otoczeniu punktu x_0
+  model = lm(
+    accel ~ times
+    , data = mcycle[k_indices, ]
+    , weights = weights
+  )
+  
+  # Prognoza w punkcie x_0
+  y_hat[i] = predict(model, newdata = data.frame(times = x0))
+  
+}
+
+plot(mcycle$times, mcycle$accel)
+lines(x, y, col = "red", lwd = 2)
+```
+
+Implementacja powyższego algorytmu w funkcji `loess`. Parametr `span` kontroluje szerokość otoczenia $x_0$ (generalnie powinno być $<1$, powyżej $1$ będą uwzględnione wszystkie punkty treningowe).
+
+```{r}
+# Inicjalizacja obiektów do przechowywania wyników
+spans = c(0.1, 0.25, 0.50)
+predict_grid = tibble(times = seq(0, max(mcycle$times), by = 0.1))
+
+for (i in 1:length(spans)) {
+  
+  # Dopasowanie modelu
+  model_loess = loess(
+    accel ~ times
+    , data = mcycle
+    , span = spans[i]
+  )
+  
+  # Prognoza na siatce
+  y_hat = predict(model_loess, predict_grid$times)
+  
+  # Zapisanie prognoz
+  predict_grid = predict_grid %>%
+      mutate(accel = y_hat, span = spans[i])
+  
+  if(i == 1) {
+    results = predict_grid
+  } else {
+    results = rbind(results, predict_grid)
+  }
+  
+}
+
+ggplot() +
+  geom_point(
+    data = mcycle
+    , mapping = aes(x = times, y = accel)
+  ) +
+  geom_point(
+    data = results
+    , mapping = aes(x = times, y = accel, color = as.factor(span))
+    , size = 1
+  ) +
+  theme(
+    legend.position = c(0.8, 0.2)
+    , legend.background = element_blank()
+  ) +
+  guides(colour = guide_legend(override.aes = list(size = 5))) +
+  labs(color = 'span')
+```
+
+## Biblioteka `gam`
+
+Wszystkie modele omawiane powyżej ([**i nie tylko**]{.underline}) określamy zbiorczo jako *uogólnione modele addytywne*. Implementację modeli klasy GAM możemy znaleźć w bibliotekach `gam` oraz `mgcv`. Składnia funkcji `gam::gam` jest analogiczna do funkcji `lm` oraz `glm`, jednak po prawą stronę równania możemy wzbogacić o funkcje nieliniowe:
+
+-   `poly` - dla regresji wielomianowej
+
+-   `bs` - dla splajnów wielomianowych
+
+-   `ns` - dla naturalnych splajnów kubicznych
+
+-   `s` - dla splajnów wygładzających
+
+-   `lo` - regresji lokalnej
+
+-   samodzielnie zdefiniowane funkcje.
+
+```{r}
+model_gam_1 = gam(accel ~ poly(times, degree = 4), data = mcycle)
+model_gam_2 = gam(accel ~ bs(times, df = 5, degree = 3), data = mcycle)
+model_gam_3 = gam(accel ~ ns(times, df = 5), data = mcycle)
+model_gam_4 = gam(accel ~ s(times, df = 5), data = mcycle)
+model_gam_5 = gam(accel ~ lo(times, span = 0.2), data = mcycle)
+
+predict_grid = tibble(times = seq(0, max(mcycle$times), by = 0.1))
+predict_grid = predict_grid %>%
+  mutate(
+    Poly = predict(model_gam_1, .)
+    , BS = predict(model_gam_2, .)
+    , NS = predict(model_gam_3, .)
+    , Smooth = predict(model_gam_4, .)
+    , Loess = predict(model_gam_5, .)
+  ) %>%
+  pivot_longer(-times)
+
+ggplot() +
+  geom_point(aes(x = times, y = accel), data = mcycle) +
+  geom_line(aes(x = times, y = value, color = name), predict_grid, size = 1)
+
+AIC(
+  model_gam_1
+  , model_gam_2
+  , model_gam_3
+  , model_gam_4
+  , model_gam_5
+)
+```
+
+## Zadania
+
+1.  Na zbiorze danych `datasets\\baseball.csv` dopasuj następujące modele oraz porównaj współczynnik determinancji $R^2$:
+
+    -   globalne wielomiany stopnia od $1$ do $3$ (z czynnikami interakcji)
+    -   splajny wielomianowe stopnia od $1$ do $3$
+    -   naturalne splajny wielomianowe stopnia od $1$ do $3$
+    -   algorytm MARS.
+
+    Zobacz jak wyglądają dopasowane modele w przestrzeni 3D.
+
+2.  Sprawdź jak wizualnie wygląda baza splajnów naturalnych (na zbiorze `mcycle`).
+
+3.  Sprawdź jak zmienia się kształt splajnu w zależności od ilości stopni swobody (na zbiorze danych `mcycle`).
+
+4.  Znajdź optymalną ilość stopni swobody dla naturalnego splajnu kubicznego na zbiorze danych `datasets\\kc_house_data.csv`.
+
+5.  Zastosuj algorytm MARS do problemu klasyfikacji na zbiorze `datasets\\winequality-red.csv` (znajdź optymalne hiperparametry modelu).
+
+6.  Znajdź optymalną wartość parametru $\lambda$ dla splajnów wygładzających na zbiorze danych `datasets\\kc_house_data.csv`.
+
+7.  Znajdź optymalną wartość parametrów `span` oraz `degree` dla modelu `loess` na zbiorze danych `datasets\\kc_house_data.csv`.
+
+## Literatura
+
+-   ESL - rozdział 5
+
+-   ESL - rozdział 6
+
+-   ESL - rozdział 9.4 (algorytm MARS)
+
+-   ITSL - rozdział 7
+
+-   [Więcej rodzajów spajnów w R](https://cran.r-project.org/web/packages/splines2/vignettes/splines2-intro.html)

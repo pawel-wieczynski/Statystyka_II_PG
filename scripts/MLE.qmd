@@ -1,0 +1,225 @@
+---
+title: "Metoda największej wiarygodności (MLE)"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, EnvStats)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Wstęp
+
+$\mathbf{X} = (X_1, \dots, X_d) \in \mathbb{R}^d$ - wektor losowy zmiennych objaśniających / predyktorów
+
+$Y \in \mathbb{R}$ - zmienna losowa będąca zmienną objaśnianą / zmienną celu
+
+Dysponujemy $n$-elementową próbą losową (tzn. konkretnymi realizacjami powyższych zmiennych losowych):
+
+$$
+\mathcal{D} = \lbrace (\mathbf{x}_1, y_1), \dots, (\mathbf{x}_n, y_n) \rbrace
+$$
+
+gdzie $\mathbf{x}_i = (x_{1i}, \dots, x_{di})$ .
+
+Szukamy warunkową wartość oczekiwaną
+
+$$
+\mathbb{E} \left[Y \ | \ X = \mathbf{x} \right]
+$$
+
+Zakładamy, że dane pochodzą z rodziny rozkładów parametryzowanych wektorem $\theta \in \Theta$. **Funkcję wiarygodności** definiujemy następująco:
+
+$$
+\mathcal{L}_n (\theta \ | \ \mathbf{x}) = \prod_{i=1}^n f (\mathbf{x}_i \ | \ \theta)
+$$
+
+gdzie $f (. \ | \ \theta)$ jest funkcją masy prawdopodobieństwa (dla rozkładów dyskretnych) lub funkcją gęstości prawdopodobieństwa (dla rozkładów ciągłych). Funkcję $\mathcal{L}$ możemy interpretować jako łączne prawdopodobieństwo wylosowania próbki $\mathcal{D}$ przy założeniu że dane pochodzą z rozkładu $f$ o parametrach $\theta$.
+
+Naszym celem jest maksymalizacja funkcji wiarygodności, tzn. szukamy:
+
+$$ \hat{\theta} = \arg\!\max_{\theta \in \Theta} \mathcal{L} (\theta \ | \ \mathbf{x}) $$ rozwiązując równanie wiarygodności:
+
+$$
+\frac{\partial \mathcal{L} (\theta \ | \ \mathbf{x})}{\partial \theta} = 0
+$$
+
+Łatwiej jest optymalizować logarytm funkcji wiarygodności:
+
+$$
+l_n (\theta \ | \ \mathbf{x}) = -\mathcal{L}_n (\theta \ | \ \mathbf{x}) \longrightarrow \min
+$$
+
+Logarytm jest funkcją ściśle rosnącą, zatem $l$ osiąga wartość maksymalną dla takiej samej wartości $\theta \in \Theta$, co funkcja $\mathcal{L}$.
+
+## Przykład: ilość orłów w serii rzutów monetą
+
+Rzucamy $n$ razy monetą, prawdopodobieństwo wyrzucenia orław pojedynczym rzucie wynosi $\theta$, a reszki $1-\theta$. Dysponujemy próbą losową $x_1, \dots, x_n$, w której wyrzucono $k$ orłów. Funkcja wiarygodności ma postać:
+
+$$
+\mathcal{L}_n (\theta \ | \ \mathbf{k}) = {N \choose k} \theta^k (1-\theta)^{n-k}
+$$
+
+```{r}
+n = 20
+set.seed(234)
+coins = rbinom(n, 1, 0.5)
+table(coins)
+k = sum(coins == 1)
+```
+
+```{r}
+likelihood = tibble(
+  p = seq(0, 1, by = 0.001)
+  , l = p^k * (1-p)^(n-k)
+)
+
+max_l = likelihood %>%
+  filter(l == max(l)) %>%
+  pull(p)
+
+max_l
+
+ggplot(likelihood, aes(x = p, y = l)) + 
+  geom_line() +
+  geom_vline(
+    xintercept = max_l
+    , linewidth = 1
+    , linetype = 'dashed'
+  )
+```
+
+## Przykład: dopasowanie rozkładu do danych
+
+Zbiór danych pochodzi ze strony internetowej <https://www.kaggle.com/datasets/amirhosseinmirzaie/americancitizenincome> i zawiera dane na temat struktury rocznych dochodów populacji USA. Zbiór danych zawiera wiele atrybutów takich jak: wykształcenie, zawód, wiek, grupa etniczna itp. W tym skrypcie interesującą nas zmienną jest `fnlwgt`, która określa ile osób reprezentuje daną grupę w strukturze dochodów. Mamy do dyspozycji $25000$ obserwacji.
+
+```{r}
+df = read.csv('datasets\\income.csv')
+```
+
+Poniżej widzimy histogram wraz z gęstością empiryczną. Spróbujemy dopasować 2 rozkłady: *log-normalny* oraz *Pareto*.
+
+```{r}
+p = ggplot(df, aes(x = fnlwgt)) +
+  geom_histogram(
+  aes(y = ..density..)
+  , bins = 100
+  , color = 'white'
+  , fill = '#00BFC4'
+  , alpha = 0.5
+  ) +
+  geom_density(
+    linewidth = 1
+    # , color = '#F8766D'
+    , aes(color = 'Empirical')
+  )
+
+p + theme(legend.position = 'none')
+```
+
+Rozkład log-normalny (<https://en.wikipedia.org/wiki/Log-normal_distribution>) zależy od dwóch parametrów: $\mu$ oraz $\sigma > 0$, a gęstość rozkładu dana jest wzorem:
+
+$$
+ f(x; \mu, \sigma) = \frac{1}{x \sigma \sqrt{2\pi}} \exp \left( - \frac{\left( \ln x - \mu \right)^2}{2 \sigma^2} \right) 
+$$
+
+Łatwo policzyć, że logarytm funkcji warygodności dla rozkładu log-normalnego ma postać:
+
+$$
+\ell (\mu, \sigma \ | \ \mathbf{x}) = - \frac{n}{2} \ln (2 \pi) - n \ln \sigma - \sum_{i=1}^n\ln(x_i) - \frac{1}{2\sigma^2} \sum_{i=1}^n \left(\ln x_i - \mu \right)^2
+$$
+
+Definiujemy logarytm funkcji wiarygodności w `r`:
+
+```{r}
+log_likelihood_lognormal = function(params, x) {
+  mu = params[1]
+  sigma = params[2]
+  if (sigma <= 0) return(-Inf)
+  n = length(x)
+  ll =  -(n/2) * log(2*pi) - n * log(sigma) - sum(log(x)) - sum((log(x) - mu)^2 / (2 * sigma^2))
+  return(-ll)
+}
+```
+
+Korzystamy z funkcji `optim`, aby znaleść optymalne parametry rozkładu, tzn. parametry maksymalizujące powyżej zdefiniowaną funkcję:
+
+```{r}
+mle_lognormal = optim(
+  par = c(log(mean(df$fnlwgt)), log(sd(df$fnlwgt))) # Parametry początkowe
+  , fn = log_likelihood_lognormal # Funkcja do optymalizacji
+  , x = df$fnlwgt # Próbka do optymalizacji
+  , method = "L-BFGS-B" # Metoda optymalizacji
+  , lower = c(-Inf, 1e-8) # Dolne ograniczenia na parametry
+)
+  
+mle_lognormal$par
+```
+
+Alternatywnie, można policzyć pochodne logarytmu funkcji wiarygodności, a następnie przyrównać je do zera.
+
+Rozkład Pareto (<https://en.wikipedia.org/wiki/Pareto_distribution>) zależy od dwóch parametrów: $x_m > 0$ zwany parametrem skali oraz $\alpha > 0$ zwany parametrem kształtu. Gęstość rozkładu dana jest wzorem:
+
+$$
+f(x; \alpha, x_m) = \frac{\alpha x^{\alpha}_m}{x^{\alpha+1}}
+$$
+
+Łatwo policzyć, że logarytm funkcji warygodności dla rozkładu log-normalnego ma postać:
+
+$$
+\ell (\alpha, x_m \ | \ \mathbf{x}) = n \ln \alpha + n \alpha \ln x_m - (\alpha + 1) \sum_{i=1}^n \ln x_i
+$$
+
+```{r}
+log_likelihood_pareto = function(params, x) {
+  alpha = params[1]
+  xm = params[2]
+  if (alpha <= 0 | xm <= 0) return(-Inf)
+  n = length(x)
+  ll = n * log(alpha) + n * alpha * log(xm) - (alpha + 1) * sum(log(x))
+  return(-ll)
+}
+
+mle_pareto = optim(
+  par = c(3, min(df$fnlwgt)) # Parametry początkowe
+  , fn = log_likelihood_pareto # Funkcja do optymalizacji
+  , x = df$fnlwgt # Próbka do optymalizacji
+  , method = "L-BFGS-B" # Metoda optymalizacji
+  , lower = c(1e-8, 1e-8) # Dolne ograniczenia na parametry
+)
+  
+mle_pareto$par
+```
+
+Poniżej widzimy histogram wraz z gęstością empiryczną oraz dopasowanymi gęstościami teoretycznymi dla powyższych rozkładów.
+
+```{r}
+p +
+  stat_function(
+    aes(color = 'Pareto')
+    , fun = dpareto
+    , args = c(mle_pareto$par[[2]], mle_pareto$par[[1]])
+    , n = 100
+    , size = 1
+    # , color = 'darkgreen'
+  ) +
+  stat_function(
+    aes(color = 'Log-normal')
+    , fun = dlnorm
+    , args = mle_lognormal$par
+    , n = 100
+    , size = 1
+    # , color = 'blue'
+  ) +
+  theme(legend.position = c(0.8, 0.7)) +
+  labs(color = 'Density')
+```
+
+## Literatura
+
+-   Zieliński R., *Siedem wykładów wprowadzających do statystyki matematycznej*, Warszawa 2004, *Wykład V. Wiarogodność*
+-   ESL - rozdział 8.2

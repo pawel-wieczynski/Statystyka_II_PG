@@ -1,0 +1,404 @@
+---
+title: "Regresja liniowa"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Metoda najmniejszych kwadratów
+
+Poniższy zbiór danych zwiera $n = 12$ realizacji wektora losowego $(X, Y)$, gdzie:
+
+-   $Y$ oznacza wzrost dzieci w cm
+
+-   $X$ oznacza wiek dzieci w miesiącach.
+
+Zakładamy, że istnieje funkcja $f$ taka, że $Y = f(X) + \epsilon$, a naszym celem jest znalezienie funkcji $\hat{f}$, która przybliża funkcję $f$ w pewien ***optymalny*** sposób.
+
+```{r}
+df = read.csv('datasets\\age_height.csv')
+ggplot(df, aes(x = age, y = height)) + geom_point()
+```
+
+W modelu regresji liniowej zakładamy, że istnieją stałe parametry $\beta_0, \beta_1 \in \mathbb{R}$, takie że $Y = \beta_0 + \beta_1 X + \epsilon$. Musimy zatem znaleźć $\hat{\beta_0}, \hat{\beta_0}$.
+
+```{r}
+df %>%
+  ggplot(aes(x = age, y = height)) +
+  geom_point() +
+  geom_smooth(method = lm, formula = y ~ x, se = FALSE) +
+  geom_abline(
+    aes(intercept = 70, slope = 0.50, color = 'line1')
+    , linetype = 'dashed'
+    , size = 1
+  ) +
+  geom_abline(
+    aes(intercept = 50, slope = 1.20, color = 'line2')
+    , linetype = 'dashed'
+    , size = 1
+  ) +
+  theme(legend.position = 'none')
+```
+
+Zmienna celu $y$ jest ciągła, przyjmijmy zatem kwadratową funkcję straty:
+
+$$
+L(\beta_0, \beta_1) = \sum_{i=1}^n \ ( y_i - \beta_0 - \beta_1 x_i)^2 \longrightarrow \min
+$$
+
+Współczynniki minimalizujące powyższą funkcję straty to:
+
+$$
+\hat{\beta_1} = \frac{\sum_{i=1}^n \left( x_i - \overline{x} 
+\right) \left( y_i - \overline{y}\right)}{ \sum_{i=1}^n \left( x_i - \overline{x} \right)^2}
+$$
+
+$$
+\hat{\beta_0} = \overline{y} - \hat{\beta_1} \overline{x}
+$$
+
+```{r}
+mu_x = mean(df$age)
+mu_y = mean(df$height)
+
+beta_1 = sum( (df$age - mu_x) * (df$height - mu_y) ) / sum( (df$age - mu_x)^2 )
+
+beta_0 = mu_y - beta_1 * mu_x
+
+beta_0
+beta_1
+```
+
+### $d>1$ zmiennych objaśniających
+
+W ogólnym przypadku, gdy mamy $n$ obserwacji oraz $d$ zmiennych objaśniających, model regresji liniowej ma postać:
+
+$$
+Y = \beta_0 + \sum_{i=1}^d \beta_i X + \epsilon
+$$
+
+Szukamy wektor $d+1$ parametrów $\hat{\beta} = \left[ \hat{\beta_0}, \hat{\beta_1}, \dots, \hat{\beta_p} \right] \in \mathbb{R}^{d+1}$, takich, że
+
+$$
+\frac{1}{n} \sum_{i=1}^n \left[ \left(y_i - \hat{\beta_0} - \sum_{j=1}^d \hat{\beta_j} x_{ij} \right) \right]^2 \longrightarrow \min
+$$
+
+### Zapis macierzowy
+
+W tym wypadku (i w wielu innych) warto zastosować zapis macierzowy. W tym wypadku mamy następujące macierze/wektory:
+
+-   $\mathbf{X}$ - macierz danych wejściowych wymiaru $n \times (d+1)$; pierwsza kolumna tej macierzy zawiera same jedynki i będzie potrzebna do oszacowania parametru $\beta_0$
+
+-   $\mathbf{y}$ - wektor danych wyjściowych wymiaru $n \times 1$
+
+-   $\hat{\beta}$ - wektor szukanych parametrów wymiaru $(d+1) \times 1$
+
+-   oraz funkcję straty, którą chcemy minimalizaować:
+
+    $$
+    L\left( \beta \right) = \left( \mathbf{y} - \mathbf{X} \beta \right)^\intercal \left( \mathbf{y} - \mathbf{X} \beta \right) =
+    \left| \left| \ \mathbf{y} - \mathbf{X} \beta \  \right| \right|^2 \longrightarrow \min
+    $$
+
+Liczymy gradient funkcji straty i przyrównujemy go do zera:
+
+$$
+\nabla L\left( \beta \right) = 2 \mathbf{X}^\intercal \left( \mathbf{X} \beta - \mathbf{y} \right) = 0
+$$
+
+Wymnażamy nawias i przenosimy na drugą stronę (*ćw. sprawdzić czy wymiary się zgadzają*):
+
+$$
+\mathbf{X}^\intercal \mathbf{X} \beta = \mathbf{X}^\intercal \mathbf{y}
+$$
+
+Rozwiązujemy równanie macierzowe względem wektora $\beta$:
+
+$$
+\hat{\beta} = \left( \mathbf{X}^\intercal \mathbf{X} \right)^{-1} \mathbf{X}^\intercal \mathbf{y} = \mathbf{X}^\dagger \mathbf{y}
+$$
+
+Macierz $\mathbf{X}^\dagger$ nazywamy **macierzą pseudoodwrotną** macierzy $\mathbf{X}$.
+
+W tej procedurze najbardziej złożonym krokiem jest odwrócenie macierzy $\mathbf{X}^\intercal \mathbf{X}$. W praktyce przyjmujemy, że:
+
+-   im mniej zmiennych objaśniających $d$, tym łatwiej odwrócić macierz
+
+-   jeśli ilość obserwacji $n$ jest wystarcająco duża, to $\mathbb{P} \left[ \ \mathbf{X}^\intercal \mathbf{X} \quad \text{jest odwracalna} \ \right] \simeq 1$.
+
+### Przykład
+
+```{r}
+X = cbind(1, df$age)
+y = df$height
+
+X_pseudo_inverse = solve( t(X) %*% X ) %*% t(X)
+beta = X_pseudo_inverse %*% y
+beta
+```
+
+W języku R mamy gotowe polecenie `lm`:
+
+```{r}
+model = lm(height ~ age, data = df)
+model$coefficients
+```
+
+```{r}
+ggplot(df, aes(x = age, y = height)) +
+  geom_point() +
+  geom_smooth(method = 'lm')
+```
+
+## Metoda największej wiarygodności
+
+MNW jest metodą parametryczną, musimy poczynić pewne założenia na temat rozkładów. Załóżmy, że błędy losowe są niezależne oraz mają rozkład warunkowo normalny:
+
+$$
+\epsilon \ | \ X \overset{\text{iid}}{\sim} \mathcal{N} (0, \sigma^2_{\epsilon})
+$$
+
+Wówczas zmienna celu $y_i$ ma również rozkład warunkowo normalny
+
+$$
+y_i \ | \ X \sim \mathcal{N}(x_i\beta, \sigma^2_\epsilon )
+$$
+
+a jej gęstość wynosi:
+
+$$
+f_Y (y_i | X ) = \frac{1}{\sqrt{2\pi \sigma^2_{\epsilon}}} \exp \left( -\frac{1}{2} \frac{ \left( y_i - x_i \beta \right)^2}{\sigma^2_\epsilon} \right)
+$$
+
+Dla danej realizacji $\mathcal{D} = \lbrace (\mathbf{x}_i, y_i )\rbrace_{i=1}^n$ funkcja wiarygodności przyjmuje postać
+
+$$
+\mathcal{L}_n (\beta, \sigma^2 \ | \ \mathcal{D}) = 
+\prod_{i=1}^n f_Y (y_i | \mathbf{x}_i) =  \\
+= \prod_{i=1}^n \frac{1}{\sqrt{2\pi \sigma^2}} \exp \left( -\frac{1}{2} \frac{ \left( y_i - x_i \beta \right)^2}{\sigma^2} \right) = \\
+= \frac{1}{\left( \sqrt{2\pi \sigma^2} \right)^n } \exp \left( -\frac{1}{2\sigma^2} \sum_{i=1}^n \left( y_i - x_i \beta \right)^2 \right)
+$$
+
+Logarytm funkcji wiarygodności przyjmuje wówczas postać
+
+$$
+l_n (\beta, \sigma^2 \ | \ \mathcal{D}) = \ln ( \mathcal{L}_n (\beta, \sigma^2 \ | \ \mathcal{D})) = \\
+= \ln \left( \frac{1}{\left( \sqrt{2\pi \sigma^2} \right)^n }  \right) + \ln \left( \exp \left( -\frac{1}{2\sigma^2} \sum_{i=1}^n \left( y_i - x_i \beta \right)^2 \right) \right) = \\
+= -\frac{n}{2} \ln \left( 2\pi \right) - \frac{n}{2} \ln \left( \sigma^2 \right) - \frac{1}{2\sigma^2} \sum_{i=1}^n \left( y_i - x_i\beta \right)^2
+$$
+
+Chcemy wyznaczyć parametry $\hat{\beta}$ oraz $\hat{\sigma}$, aby zmaksymalizowac logarytm wiarygodności. Liczymy zatem odpowiednie gradienty
+
+$$
+\nabla_{\beta} \ l_n (\beta, \sigma^2 \ | \ \mathcal{D}) = \frac{1}{\sigma^2} \sum_{i=1}^n \mathbf{x}_i^\intercal \left( y_i - \mathbf{x}_i \beta \right) = 
+\frac{1}{\sigma^2} \left( \sum_{i=1}^n \mathbf{x}_i^\intercal y_i - \sum_{i=1}^n \mathbf{x}_i^\intercal \mathbf{x}_i \beta \right)
+$$
+
+$$
+\frac{\partial }{\partial \sigma^2} l_n (\beta, \sigma^2 \ | \ \mathcal{D}) = 
+-\frac{n}{2\sigma^2} - \left( \frac{1}{2} \sum_{i=1}^n \left( y_i - \mathbf{x}_i \beta \right)^2  \right) \frac{1}{\left( \sigma^2 \right)^2} = \\
+= \frac{1}{2\sigma^2} \left( \frac{1}{\sigma^2} \sum_{i=1}^n \left( y_i - \mathbf{x}_i \beta \right)^2 - n \right)
+$$
+
+Przyrównując je do zera otrzymujemy
+
+$$
+\hat{\beta} = \left( \sum_{i=1}^n \mathbf{x}_i^\intercal \mathbf{x}_i \right)^{-1} \sum_{i=1}^n \mathbf{x}_i^\intercal y_i = \left( \mathbf{X}^\intercal \mathbf{X} \right)^{-1} \mathbf{X}^\intercal y = \mathbf{X}^\dagger y
+$$
+
+$$
+\hat{\sigma}^2 = \frac{1}{n} \sum_{i=1}^n \left( y_i - \mathbf{x}_i \hat{\beta} \right)^2
+$$
+
+Widzimy zatem, że w przypadku regresji liniowej współczynniki $\hat{\beta}$ otrzymane za pomocą metody największej wiarygodności są takie same jak współczynniki otrzymane za pomoca metody najmniejszych kwadratów.
+
+## Przykład: prognozowanie cen mieszkań
+
+Dane pochodzą ze strony [Kaggle.com](https://www.kaggle.com/datasets/harlfoxem/housesalesprediction). Na stronie w zakładce *Discussion* można znaleźć definicje poszczególnych zmiennych. Ten zbiór został przeze mnie trochę zmodyfikowany, aby zobrazować kilka idei związanych z tzw. *subset selection* czyli doborem zmiennych objaśniających do modelu.
+
+```{r}
+options(scipen = 8)
+df = read.csv('datasets\\kc_house_data_pawel.csv')
+```
+
+Zmienną celu jest `price`. Estymujemy model regresji liniowej za pomocą funkcji `lm`:
+
+```{r}
+model_1 = lm(price ~ ., data = df)
+summary(model_1)
+```
+
+Jak czytać powyższe podsumowanie modelu dopasowanego za pomocą `lm`?
+
+1.  W kolumne `Estimate` mamy podane współczynniki modelu $\hat{\beta}$. Interpretacja: jeśli metraż wzrośnie o jedną jednostkę (w tym wypadku stopę kwadratową), to cena wzrośnie średnio o 299.13 USD.
+
+2.  Obok mamy błędy standardowe oraz wartości statystyki testowej dla testu t-Studenta na istosność parametrów strukturalnych $\hat{\beta}$.
+
+3.  W kolumnie `Pr(>|t|)` mamy wartości *p-value* testu t-Studenta.
+
+4.  `Multiple R-squared` - współczynnik determinancji $R^2$ - mówi nam ile procent wariancji zmiennej celu zostało wyjasnione przez ten model, tzn.
+
+    $$
+    R^2 = 1 - \frac{\sum \left( y_i - \hat{y_i} \right)^2 }{ \sum \left( y_i - \bar{y} \right)^2 } =
+    1 - \frac{\left( y - \hat{y} \right)^\intercal \left( y - \hat{y} \right) }{\left( y - \bar{y} \right)^\intercal \left( y - \bar{y} \right)}
+    $$
+
+5.  `Adjusted R-squared` - skorygowany współczynnik $R^2$ penalizujący zbyt dużą ilość parametrów modelu. Duża różnica między $R^2$ oraz skorygowanym $R^2$ może wskazywać na *overfitting*.
+
+    $$
+    \bar{R^2} = 1 - (1 - R^2) \frac{n-1}{n - d - 1}
+    $$
+
+6.  `F-statistic` - test na łączną istotność wszystkich parametrów $\hat{\beta}$
+
+## Dobór zmiennych objaśniających
+
+Jak widzimy w podsumowaniu `model_1` nie wszystkie zmienne objaśniające są istotne statystycznie (*p-value* poniżej 5%). Moglibyśmy usunąć wszystkie zmienne nieistotne i oszacować nowy model. Nie jest to jednak dobre podejście, ponieważ eliminacja jednej zmiennej wpłynie na wszystkie pozostałe współczynniki oraz ich błędy standardowe, a co za tym idzie również na wynik testów t-Studenta (oraz odpowiadające im wartości *p-value*).
+
+### Najlepszy podzbiór zmiennych objaśniających
+
+Oszacowujemy modele regresji dla wszystkich możliwych kombinacji zmiennych objaśniających i wybieramy najbardziej optymalny model, np. minimalizujący AIC, minimalizujący sumę kwadratów albo maksymalizujący $\bar{R^2}$. Złożoność obliczeniowa tej metody wynosi $\mathcal{O}(2^d)$, zatem podejście to ma jedynie sens gdy liczba wymiarów $d$ wynosi mniej niż około 30 lub 40.
+
+W naszym przypadku $d = 12$, zatem spróbujmy zaimplementować tę procedurę w `R`:
+
+```{r}
+d = 12
+
+# Generujemy wszystkkie mozliwe podzbiory kolumn
+col_subsets = lapply(
+  1:d
+  , combn
+  , x = colnames(df)[2:(d+1)]
+  , simplify = FALSE
+) %>%
+  unlist(recursive = FALSE)
+
+# Tabela do przechowywania wyników
+bss_results = tibble(
+  Model = 1:length(col_subsets)
+  , AIC = NA
+)
+
+# Szacujemy modele
+for (i in 1:length(col_subsets)) {
+  
+  # Zmienne do i-tego modelu
+  vars_i = col_subsets[[i]]
+  
+  # Napisanie formuły wg składni lm
+  if (length(vars_i) == 1) {
+    formula_i = paste0('price ~ ', vars_i)
+  } else {
+    formula_i = paste0('price ~ ', paste0(vars_i, collapse = ' + '))
+  }
+  
+  # oszacowanie modelu
+  model_i = lm(formula = formula(formula_i), data = df)
+  
+  # Policzenie AIC i zapisanie do tabeli
+  bss_results$AIC[i] = AIC(model_i)
+  
+  # cat('\n', i)
+}
+```
+
+Zaznaczamy najlepszy model dla każdego wymiaru $k = 1, \dots, d$.
+
+```{r}
+bss_results = bss_results %>%
+  mutate(Dimension = map_int(col_subsets, length)) %>%
+  group_by(Dimension) %>%
+  mutate(Best = if_else(AIC == min(AIC), 1, 0 ) %>% as.factor()) %>%
+  ungroup()
+```
+
+```{r}
+ggplot() +
+  geom_jitter(
+    data = bss_results %>% filter(Best == '0')
+    , mapping = aes(x = Dimension, y = AIC)
+    , alpha = 0.30, height = 0.1, width = 0.15, color = '#F8766D'
+  ) +
+  geom_point(
+    data = bss_results %>% filter(Best == '1')
+    , mapping = aes(x = Dimension, y = AIC)
+    , size = 3, color = '#7CAE00'
+  ) +
+  geom_line(
+    data = bss_results %>% filter(Best == '1')
+    , mapping = aes(x = Dimension, y = AIC)
+    , size = 1, color = '#7CAE00', linetype = 'dashed'
+  )
+
+```
+
+### Procedura forward selection
+
+Wykonujemy następujące kroki:
+
+1.  Zaczynamy od modelu bez żadnych zmiennych objaśniających (lub od modelu zawierającego tylko wyraz wolny).
+2.  W każdej kolejnej iteracji dodajemy po jednej zmiennej mającej *największe znaczenie* (na podstawie wybranego kryterium: *p-value*, AIC, skorygowany $R^2$, suma kwadrarów reszt).
+3.  Powtarzamy iteracje aż osiągniemy pewne kryterium stopu, np. model osiągnie zadaną ilość zmiennych lub poprawa jakości modelu nie przekroczy pewnego progu w danej iteracji.
+
+### Procedura backward selection
+
+Wykonujemy następujące kroki:
+
+1.  Zaczynamy od pełnego modelu zawierającego wszystkie zmienne objaśniające.
+2.  W każdej kolejnej iteracji usuwamy po jednej zmiennej mającej *najmniejsze znaczenie* (na podstawie wybranego kryterium: *p-value*, AIC, skorygowany $R^2$, suma kwadrarów reszt).
+3.  Powtarzamy iteracje aż osiągniemy pewne kryterium stopu, np. model osiągnie zadaną ilość zmiennych lub poprawa jakości modelu nie przekroczy pewnego progu w danej iteracji.
+
+W języku `R` mamy wbudowaną funkcję `step`, która wykonuje powyższe procedury na podstawie kryterium AIC.
+
+```{r}
+model_2 = step(model_1, direction = 'backward')
+summary(model_2)
+```
+
+## Zadania
+
+1.  Policz bootstrapowe przedziały ufności dla współczynników regresji.
+2.  Zastosuj procedurę *forward selection*, aby wybrać podzbiór zmiennych objaśniających minimalizujący błąd generalizacji oszacowany za pomocą 5-krotnej walidacji krzyżowej.
+
+```{r}
+df = read.csv('datasets\\kc_house_data.csv')
+```
+
+3.  Stabilność numeryczna. Chcemy odwrócić poniższą macierz $X^{\intercal} X$, jednak dostajemy błąd. Wynika z ograniczonej precyzji numerycznej naszych komputerów.
+
+```{r}
+x = seq(1, 500, length.out = 50)
+X = cbind(1, x, x^2, x^3)
+solve( t(X) %*% X )
+```
+
+Policz współczynniki $\hat{\beta}$ za pomocą rozkładu macierzy $X = QR$, gdzie:
+
+-   $Q$ jest macierzą ortogonalną, tzn. $Q^\intercal Q = I$
+
+-   $R$ jest macierzą trójkątną
+
+Porównaj otrzymane wyniki z wynikiem zwróconym przez funkcję `lm`.
+
+```{r}
+beta = matrix(rep(1, 4), nrow = 4)
+y = X %*% beta + rnorm(50)
+
+df_ex3 = X[, 2:4] %>%
+  as_tibble() %>%
+  mutate(y = as.numeric(y))
+colnames(df_ex3) = c(str_c('x', 1:3), 'y')
+```
+
+## Literatura
+
+-   ESL - rozdział 2.3.1, rozdział 3.2 i 3.3
+
+-   ITSL - rozdział 3

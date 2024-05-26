@@ -1,0 +1,216 @@
+---
+title: "Wprowadzenie do metod uczenia maszynowego"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Wstęp
+
+### Oznaczenia
+
+-   $X = (X_1, \dots, X_d) \in \mathbb{R}^d$ - wektor losowy zmiennych objaśniających / predyktorów
+
+-   $Y \in \mathbb{R}$ - zmienna losowa będąca zmienną objaśnianą / zmienną celu
+
+-   $\mathbb{P} (\mathbf{X}, Y)$ - łączny rozkład prawdopodobieństwa
+
+-   Szukamy funkcję $f(X) \simeq Y$, tzn. $Y = f(X) + \epsilon$. Zakładamy, że $\mathbb{E}(\epsilon) = 0$ oraz $\mathbb{V}(\epsilon) = \sigma_{\epsilon}^2$.
+
+-   $L_f = L(Y, f(X))$ - funkcja straty oceniająca jak dobrze $f(X)$ przybliża $Y$
+
+-   $\mathcal{D} = \lbrace (\mathbf{x}_i , y_i) \rbrace_{i=1}^n$ - realizacje powyższych zmiennych losowych, dane treningowe / próbka losowa, którą dysponujemy
+
+### Terminologia
+
+#### Rodzaje uczenia maszynowego
+
+1.  Uczenie nadzorowane - problem opisany powyżej za pomocą oznaczeń.
+
+2.  Uczenie nienadzorowane - nie dysponujemy zmienną celu $Y$, czyli dostępny zbiór danych ma postać $\mathcal{D} = \lbrace \mathbf{x}_i \rbrace_{i=1}^n$. Naszym celem jest odnalezienie *interesujących wzorców* występujących w danych.
+
+3.  Uczenie ze wzmocnieniem - nie dysponujemy żadnym zbiorem danych $\mathcal{D}$. Program sam podejmuje decyzje, a kolejne próby są nagradzane lub karane zależnie od osiąganego wyniku.
+
+#### Typy uczenia nadzorowanego
+
+1.  Klasyfikacja binarna - zmienna celu przyjmuje dwie wartości $Y \in \lbrace -1, 1 \rbrace$. Przykłady: diagnozowanie pacjentów chory/zdrowy, detekcja e-maili będących spamem, ocena zdolności kredytowej skutkująca przyznaniem bądź nieprzyznaniem kredytu.
+
+2.  Klasyfikacja wieloczynnikowa - zmienna celu przyjmuje dyskretny zbiór wartości $Y \in \lbrace 1, \dots , k \rbrace$. Przykłady: komputerowe odczytywanie cyfr zapisanych ręcznie, klasyfikacja choroby na podstawie objawów, identyfikacja twarzy lub odcisków palców.
+
+3.  Regresja - zmienna celu przyjmuje dowolne wartości rzeczywiste $Y \in \mathbb{R}$. Przykłady: prognozowanie cen mieszkań, prognozowanie ruchu w hipermarketach (lub ogólnie prognozowanie popytu na określone dobra lub usługi), prognozowanie popularności postów w mediach społecznościowych, prognozowanie eksprecji genów w biologii.
+
+W zagadnieniach klasyfikacji jako funkcję straty będziemy przyjmować najczęściej
+
+$$
+L (Y, \hat{f}(X)) = \left| \ Y \neq \hat{f}(X) \ \right|
+$$
+
+lub gdy algorytm modeluje prawdopodobieństwo klasy $k$, tzn. $p_k(X) = \mathbb{P} (Y = k \ | \ X)$, to przyjmujemy, że $\hat{f}(X) = \arg\max_k \hat{p}_k (X)$, zaś funkcją straty będzie tzw. *deviance*
+
+$$
+L(Y, \hat{f}(X)) = -2 \sum_{k} = \mathbb{I}_{\lbrace Y = k\rbrace } \ln \hat{p}_k(X) = -2 \ln \hat{p}_Y (X)
+$$
+
+W zagadnieniach regresji jako funkcję straty będziemy przyjmować najczęściej błąd kwadratowy
+
+$$
+L(Y, \hat{f}(X))  = (Y - \hat{f} (X))^2
+$$
+
+#### Przykłady uczenia nienadzorowanego
+
+1.  Grupowanie / klastrowanie danych - szukamy podzbiorów danych, takich że elementy wewnątrz podzbioru są do siebie *podobne*, natomiast nie są *podobne* do elementów z innych podzbiorów.
+
+2.  Redukcja wymiarów - szukamy przekształcenia z $\mathbb{R}^d \rightarrow \mathbb{R}^{d^\prime}$, t. że $d^\prime < d$, ale zachowujemy jak najwięcej informacji o wyjściowym zbiorze danych.
+
+3.  Reguły asocjacyjne / analiza koszykowa - jeśli klient sklepy kupi produkt $a$, to z dużym prawdopodobieństwem kupi równiez produkt $b$ oraz $c$.
+
+## Statystyczna teoria decyzji
+
+Skupimy się na zagadnieniu regresji. Przyjmijmy zatem kwadratową funkcję straty:
+
+$$
+L_f = (Y - f(X))^2
+$$
+
+Naszym celem jest minimalizacja jej wartości oczekiwanej względem zmiennych losowych $X, Y$, którą nazywamy **funkcją ryzyka**:
+
+$$
+\mathcal{R}_f =  \mathbb{E} (L_f) =  \mathbb{E} \left[ (Y - f(X))^2 \right] = \int (y-f(x))^2 \ \mathbb{P} (dx, dy) \longrightarrow \min
+$$
+
+Korzystając z własności wartości oczekiwanej (*law of total expectations*) mamy:
+
+$$
+\mathcal{R}_f =  \mathbb{E} \left[ (Y - f(X))^2 \right] = \mathbb{E} \left[ \mathbb{E} \left[ (Y - f(X))^2 \ | \ X) \right] \right]
+$$
+
+Sprowadza się to do minimalizacji powyższego wyrażenia punktowo dla każdego $x$. Dla konkretnej realizacji $x$ zmiennej losowej $X$ chcemy znaleźć wartość $f(x) = c$, która zminimalizuje oczekiwany błąd $\mathbb{E}( (Y - c)^2) \ | \ X = x)$. W tym wypadku rozwiązaniem jest warunkowa wartość oczekiwana
+
+$$
+f(x) = \mathbb{E} (Y \ | \ X = x)
+$$
+
+W praktyce dysponujemy konkretnymi realizacjami powyższych zmiennych losowych, czyli mamy zbiór treningowy $\mathcal{D} = \lbrace (\mathbf{x}_i , y_i) \rbrace_{i=1}^n$. Założmy, że znaleźliśmy pewną funkcję $\hat{f}$, która w jakiś sposób przybliża funkcję $f$. Możemy policzyć błąd treningowy na zbiorze $\mathcal{D}$ jako średnią wartość funkcji straty:
+
+$$
+\text{err} = \frac{1}{n} \sum_{i=1}^n L \left( y_i, \hat{f}(x_i) \right)
+$$
+
+Gdybym naszym celem była optymalizacja, to chcielibyśmy zminimalizować powyższy błąd. Możnaby to osiągnąć poprzez zwiększanie złożoności modelu. Jednak **naszym celem nie jest optymalizacja, tylko generalizacja** prognoz na nowe realizacje zmiennych losowych $(X, Y)$. Zdefiniujmy zatem błąd generalizacji:
+
+$$
+\text{Err}_{\mathcal{D}} = \mathbb{E} \left[ L \left( Y, \hat{f} \left( X \right) \right) \ | \ \mathcal{D} \right]
+$$
+
+Pozbywając się losowości wynikającej z realizacji $\mathcal{D}$ otrzymujemy oczekiwany błąd generalizacji:
+
+$$
+\text{Err} = \mathbb{E} \left[ \text{Err}_{\mathcal{D}} \right] = \mathbb{E} \left[ \mathbb{E} \left[ L \left( Y, \hat{f} \left( X \right) \right) \ | \ \mathcal{D} \right] \right] =
+\mathbb{E} \left[ L \left( Y, \hat{f} \left( X \right) \right) \right]
+$$
+
+### **Dekompozycja bias-variance**
+
+Spróbujmy rozwinąć powyższą równość przyjmując ponownie kwadratową funkcję straty:
+
+$$
+\mathbb{E} \left[ \left( Y - \hat{f} (X) \right)^2 \right] = \\
+= \mathbb{E} \left[ Y^2 \right] - 2 \mathbb{E} \left[ Y \hat{f}(X) \right] + \mathbb{E} \left[ \hat{f}(X)^2 \right] = \\
+= \mathbb{E} \left[ \left( f(X) + \epsilon \right)^2 \right] - 2 \mathbb{E} \left[ f(X) \hat{f}(X) \right] - 2\mathbb{E} \left[ \epsilon \hat{f}(X) \right] + \mathbb{E} \left[ \hat{f}(X)^2 \right] = \\
+= \left( f(X) \right)^2 + \sigma^2_{\epsilon} - 2 f(X) \mathbb{E} \left[ \hat{f}(X)^2 \right] + \mathbb{V} \left[ \hat{f}(X) \right] + \mathbb{E} \left[ \hat{f}(X) \right]^2 = \\
+= \left( f(X) - \mathbb{E} \left[ \hat{f}(X) \right] \right)^2 + \mathbb{V} \left[ \hat{f}(X) \right] + \sigma_{\epsilon}^2
+$$
+
+Mamy zatem trzy składniki:
+
+-   $\left( f(X) - \mathbb{E} \left[ \hat{f}(X) \right] \right)^2$ - nazywamy obciążeniem modelu $\hat{f}$ (ang. *bias*)
+
+-   $\mathbb{V} \left[ \hat{f}(X) \right]$ - wariancja modelu $\hat{f}$
+
+-   $\sigma_{\epsilon}^2$ - nieredukowalny błąd.
+
+Chcielibyśmy zredukować zarówno obciążenie jak i wariancję modelu. W praktyce jednak często jest to niemożliwe, tzn. zmniejszając bias zwiększamy wariancję lub odwrotnie. Poprawna specyfikacja modelu sprowadza się zatem do znalezienia tzw. kompromisu między obciążeniem a wariancją (ang. *bias-variance tradeoff*). Później poznamy kilka sposób na zredukowanie wariancji.
+
+### **Overfitting i underfitting**
+
+Małe obciążenie / duża wariancja -\> możliwe przetrenowanie modelu (ang. *overfitting*), tzn. model świetnie pasuje do danych treningowych (mały $\text{err}$), natomiast uzyskujemy duży błąd na zbiorze walidacyjnym (duży $\text{Err}_{\mathcal{D}}$).
+
+Duże obciążenie / mała wariancja -\> możliwe niedoszacowanie modelu (ang. *underfitting*), tzn. duży błąd na danych treningowych. Czasami celowo chcemy zwiększyć błąd treningowy, aby zmniejszyć wariancję (np. regularyzacja w modelach regresyjnych).
+
+```{r}
+set.seed(213)
+n = 10
+x = seq(0, 1, length.out = n)
+y = 2*x + 5 + rnorm(n, sd = 0.5)
+df = tibble(x = x, y = y)
+
+ggplot(df, aes(x = x, y = y)) +
+  geom_point(size = 3) +
+  geom_smooth(
+    formula = 'y ~ x'
+    , method = 'lm'
+    , se = FALSE
+    , aes(color = 'High bias, low variance')
+  ) +
+  geom_smooth(
+    formula = 'y ~ x + I(x^2) + I(x^3) + I(x^4) + I(x^5) + I(x^6) + I(x^7) + I(x^8) + I(x^9)'
+    , method = 'lm'
+    , se = FALSE
+    , aes(color = 'Low bias, high variance')
+  ) +
+  theme(legend.position = c(0.50, 0.15), legend.background = element_blank()) +
+  labs(y = '', x = '', color = '', title = 'Overfitting - przykład: regresja liniowa vs regresja wielomianem 9 stopnia')
+
+```
+
+![Zródło: ESL, s.38](images/esl_model_complexity_vs_error.PNG){fig-align="center"}
+
+## Walidacja krzyżowa
+
+Załóżmy, że nasz model $\hat{f}$ zależy od pewnego hyperparametru $\theta \in \Theta$ (lub zbioru hiperparametrów). Chcemy znaleźć $\hat{\theta}$ aby który minimalizuje średni błąd generalizacji $\text{Err} = \mathbb{E} \left[ L \left( Y, \hat{f} \left( X \right) \right) \right]$.
+
+Najpopularniejsza metoda estymacji $\text{Err}$ to walidacja krzyżowa (ang. *cross-validation*). Dla ustalonej wartości parametru $\theta$ wykonujemy następujące kroki:
+
+1.  Dzielimy zbiór danych na $K$ rozłącznych podzbiorów.
+
+2.  Dla $k = 1, … , K$:
+
+    -   dopasowujemy model $\hat{f}$ na pozostałych $K-1$ podzbiorach (tzn. wszystkich podzbiorach oprócz $k$-tego pozbioru)
+
+    -   dokonujemy prognozy na $k$-tym podzbiorze
+
+    -   liczymy funkcję straty dla wszystkich obserwacji z $k$-tego podzbioru.
+
+Oznaczmy $\hat{f}^i_{\theta} (x_i)$ model dopasowany na podzbiorach niezawierających $i$-tej obserwacji i zależny od parametru $\theta$. Wówczas $\text{Err}$ możemy przybliżyć uśredniając funkcję straty na wszystkie obserwacje:
+
+$$
+\text{CV} (\hat{f}, \theta ) = \frac{1}{n} \sum_{i=1}^n L (y_i, \hat{f}^i_{\theta} (x_i))
+$$
+
+Ostatecznie wybieramy $\hat{\theta}$ minimalizujący powyższe wyrażenie.
+
+W praktyce najczęściej wybiera się $K=5$ lub $K=10$. Gdy $K = n$, to jest to szczególny przypadek zwany LOOCV (ang. *leave one out cross validation*).
+
+Aby ocenić finalną jakość modelu potrzebujemy nową próbkę z rozkładu $\mathbb{P} (\mathbf{X}, Y)$. W praktyce często dzielimy zbiór danych na 3 pozbiory:
+
+1.  zbiór treningowy - do estymowania funkcji $\hat{f}$
+
+2.  zbiór walidacyjny - do wyboru optymalnych hiperparametrów $\hat{\theta}$
+
+3.  zbiór testowy - do finalnej oceny modelu.
+
+Przykładowe proporcje to 50% / 25% / 25%, ale w rzeczywistości zależy to od wielu czynników, np. ilość dostępnych danych, ilość szumu w danych, złożność dopasowywanych modeli.
+
+## Literatura
+
+-   ESL - rozdział 2.4 oraz 2.9
+
+-   ESL - rozdział 7

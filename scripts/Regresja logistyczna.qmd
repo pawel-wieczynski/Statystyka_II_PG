@@ -1,0 +1,397 @@
+---
+title: "Regresja logistyczna"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, glmnet, caret, pROC)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Liniowy model prawdopodobieństwa
+
+W modelach regresji dane treningowe były realizacją wektora losowego $(X,Y) \in \mathbb{R}^{d+1}$. Teraz zmienna celu $Y$ będzie binarna, zatem $(X,Y) \in \mathbb{R}^{d} \times \lbrace -1, 1 \rbrace$ lub $(X,Y) \in \mathbb{R}^{d} \times \lbrace 0, 1 \rbrace$. Możemy zatem spróbować oszacować liniowy model postaci:
+
+$$
+Y = p(X) = X \beta + \epsilon
+$$
+
+Wówczas model $\hat{Y} = X \hat{\beta}$ jest oszacowaniem prawdopodobieństwa warunkowego $p(X) = \mathbb{P} \left( Y = 1 \ | \ X \right)$. Możemy przyjąć pewien próg klasyfikacji:
+
+$$
+\begin{cases}
+Y = 1 \quad \text{gdy} \ \hat{Y} > 0.5 \\
+Y = 0 \quad \text{gdy} \ \hat{Y} \leq 0.5
+\end{cases}
+$$
+
+```{r}
+df = read.csv('datasets\\winequality-red_sample.csv')
+df = df %>% mutate(quality_bin = if_else(quality > 5, 1, 0))
+
+ggplot(df, aes(x = alcohol, y = quality_bin)) +
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE)
+```
+
+Jak widzimy, na powyższym wykresie, liniowy model prawdopodobieństwa stwarza trudności interpretacyjne. Zmienna $\hat{Y}$ może przyjmowac wartości mniejsze od $0$ oraz większe od $1$.
+
+Zbiór danych pochodzi z: <https://www.kaggle.com/datasets/uciml/red-wine-quality-cortez-et-al-2009>
+
+## Model logitowy
+
+W modelu regresji logistycznej definiujemy funkcję prawdopodobieństwa następująco:
+
+$$
+p(X) = \frac{e^{X \beta}}{1 + e^{X \beta}} = \frac{1}{1 + e^{-X\beta}}
+$$
+
+```{r}
+logit = function(p) log(p / (1-p))
+sigmoid = function(x) 1 / (1 + exp(-x))
+
+df = tibble(
+  x = seq(-10, 10, by = 0.1)
+  , s = sigmoid(x)
+  , p = seq(0, 1, by = 0.005)
+  , l = logit(p)
+)
+
+ggplot(df, aes(x, s)) + geom_line() + ggtitle('Funkcja sigmoid')
+```
+
+Tak zdefiniowana funkcja przyjmuje wartości z zakresu $[0,1]$, możemy ją zatem interpretować jako prawdopodobieństwo. Po odpowiednich przekształceniach mamy:
+
+$$
+\frac{p(X)}{1 - p(X)} = e^{X \beta}
+$$
+
+Skoro $p(X)$ jest prawdopodobieństwem sukcesu, to $1 - p(X)$ jest prawdopodobieństwem porażki, zaś ich iloraz nazywamy szansą (ang. *odds* lub *odds-ratio*). Wielkość ta przyjmuje wartości z przedziału $[0, +\infty]$. Logarytmując obustronnie otrzymujemy:
+
+$$
+\ln \left( \frac{p(X)}{1 - p(X)} \right) = X \beta
+$$
+
+Po lewej stronie mamy *logarytm szans* (ang. *log-odds*), zaś po prawej stronie mamy liniową kombinację zmiennych objaśniających $X$ oraz parametrów strukturalnych $\beta$.
+
+```{r}
+ggplot(df, aes(p, l)) + geom_line() + ggtitle('Funkcja logit')
+```
+
+## Metoda największej wiarygodności
+
+MNW jest metodą parametryczną, musimy poczynić pewne założenia na temat rozkładów. W modelu logitowym zakładamy, że rozkład warunkowy $y_i$ jest rozkładem Bernoulliego z prawdopodobieństwem sukcesu $p$:
+
+$$
+y_i \ | \ X \sim \text{Bernoulli}(p)
+$$
+
+Funkcja masy prawdopodobieństwa rozkładu Bernoulliego ma postać:
+
+$$
+f_Y (y_i \ | \ p) = p^{y_i}(1-p)^{1-y_i}
+$$
+
+Dla danej realizacji $\mathcal{D} = \lbrace (\mathbf{x}_i, y_i )\rbrace_{i=1}^n$ funkcja wiarygodności przyjmuje postać:
+
+$$
+\mathcal{L}_n (\beta \ | \ \mathcal{D}) = \prod_{i=1}^n p^{y_i}(1-p)^{1-y_i}
+$$
+
+Wówczas logarytm funkcji wiarygodności wynosi
+
+$$
+l_n (\beta \ | \ \mathcal{D}) = \sum_{i=1}^n y_i \ln(p) + (1-y_i)\ln(1-p) = \\
+= \sum_{i=1}^n y_i \ln \left( \frac{1}{1 + e^{-x_i\beta}} \right) + (1-y_i) \ln \left( \frac{1}{1 + e^{x_i\beta}} \right) = \\
+= \sum_{i=1}^n y_i \left( \ln(1) - \ln \left(1 + e^{-x_i\beta}\right) \right) + (1 - y_i) \left( \ln(1) - \ln \left( 1 + e^{x_i\beta} \right) \right) = \\
+= \sum_{i=1}^n y_ix_i\beta - \sum_{i=1}^n \ln\left( 1 + e^{x_i\beta} \right)
+$$
+
+Aby zmaksymalizować logarytm wiarygodności liczymy pochodne po $\beta_j$ i przyrównujemy je do zera:
+
+$$
+\frac{\partial l_n}{\partial \beta_j} = \sum_{i=1}^n x_{ij} \left( y_i - \frac{1}{1 + e^{-\left( x_{ij}\beta_j \right)}} \right) = 0
+$$
+
+Niestety, w tym wypadku nie istnieje rozwiązanie analityczne. Musimy więc skorzystać z algorytmów optymalizacyjnych.
+
+### Metoda Newtona-Raphsona
+
+Metoda numeryczna służąca do znajdowania miejsc zerowych funkcji $f(x)$. Wybieramy punkt startowy $x_0$, a następnie szukamy iteracyjnie optymalnego rozwiązania:
+
+$$
+x_{n+1} = x_n - \frac{f(x_n)}{f^\prime(x_n)}
+$$
+
+My chcemy zminimalizować logarytm funkcji wiarygodności, zatem chcemy znaleźć miejsce zerowe pierwszej pochodnej logarytmu wiarygodności. Wybieramy losowo wektor początkowy $\beta^{(0)}$, a następnie szukamy iteracyjnie optymalnego rozwiązania:
+
+$$
+\beta^{(t+1)} = \beta^{(t)} - \frac{\nabla_{\beta} \ l(\beta^{(t)})}{\nabla_{\beta\beta} \ l (\beta^{(t)})}
+$$
+
+Liczymy pierwszą pochodną z logarytmu wiarygodności:
+
+$$
+\nabla_\beta \ l = \sum_{i=1}^n \nabla_\beta \ y_i x_i \beta - \sum_{i=1}^n \nabla  \ln\left( 1 + e^{x_i\beta} \right) = \\
+= \sum_{i=1}^n y_i x_i - \sum_{i=1}^n \frac{e^{x_i\beta}X}{1 + e^{x_i\beta}} 
+= \sum_{i=1}^n y_i x_i - \sum_{i=1}^n p(x_i)x_i = \\
+= \sum_{i=1}^n\left( y_i - p(x_i) \right) x_i = X^\intercal (Y - P)
+$$
+
+Liczymy drugą pochodną z logarytmu wiarygodności:
+
+$$
+\nabla_{\beta\beta} \ l = \sum_{i=1}^n \nabla_\beta \ (y_i - p(x_i) ) x_i = \\
+= - \sum_{i=1}^n \nabla_\beta \ \frac{x_i}{1 + e^{-x_i\beta}} = 
+- \sum_{i=1}^n \frac{e^{-x_i\beta} (-x_i)x_i}{(1 + e^{-x_i\beta})^2}  = \\
+= - \sum_{i=1}^n p(x_i) ( 1 - p(x_i)) (-x_i) x_i = \\
+= -X^\intercal P (1-P)X = -X^\intercal W X
+$$
+
+Macierze $P$ oraz $W$ zmieniają się podczas każdej iteracji, zaindeksujmy je zatem $P^{(t)}$ oraz $W^{(t)}$. Kolejna iteracja algorytmu ma zatem postać:
+
+$$
+\beta^{(t+1)} = \beta^{(t)} - \frac{X^\intercal (Y - P^{(t)})}{-X^\intercal W^{(t)} X} = \\
+ =  \beta^{(t)} + X (Y - P^{(t)} ) (X^\intercal W^{(t)}X)^{-1}
+$$
+
+```{r}
+# Definiujemy macierz X oraz wektor y
+X = as.matrix(cbind(rep(1, nrow(df)), df$alcohol))
+y = df$quality_bin
+
+# Początkowe wartości parametrów beta
+set.seed(213)
+beta = rnorm(ncol(X))
+
+for (i in 1:5) {
+  # Oszacowanie prawdopodobieństw
+  p = 1 / (1 + exp(-X %*% beta))
+  
+  # Macierz W
+  w = p * (1-p)
+  W = diag(as.vector(w))
+  
+  # Aktualizacja parametrów beta 
+  beta = beta + solve(t(X) %*% W %*% X) %*% t(X) %*% (y - p)
+  
+  # Obliczenie logarytmu wiarygodności
+  ll = sum(y * X %*% beta) - sum(log(1 + exp(X %*% beta)))
+  
+  # Monitorowanie zbieżności
+  cat(paste0(
+    'Iteration: ', i
+    , '. Log-likelihood: ', round(ll, 4)
+    , '. b0 = ', round(beta[1], 4)
+    , ', b1 = ', round(beta[2], 4)
+    , '.\n'
+  ))
+}
+```
+
+## Uogólniony model liniowy
+
+Regresja liniowa oraz regresja logistyczna sa szczególnymi przypadkami modeli klasy GLM (ang. *generalized linear models*). Model klasy GLM definiujemy jako:
+
+$$
+\mathbb{E} [ Y \ | \ X] = \mu = g^{-1}(X \beta)
+$$
+
+gdzie $X\beta$ jest kombinacją liniową zmiennych objaśniających $X$ oraz parametrów $\beta$, natomiast $g(x)$ jest funkcją wiążącą (ang. *link function*). Ponadto zakładamy, że rozkład zmiennej losowej $Y$ należy do [rodziny rozkładów wykładniczych](https://en.wikipedia.org/wiki/Exponential_family) (w tej rodzinie znajdują się między innymi rozkład normalny oraz rozkład Bernoulliego).
+
+W regresji liniowej mamy $g(x) = x$, natomiast w regresji logistycznej mamy $g(x) = \ln \left( \frac{x}{1-x} \right)$. Inny przykład to regresja Poissona, gdzie $g(x) = \ln(x)$, która służy do modelowania zmiennej $Y$ zliczającej ilość zdarzeń w określonej jednostce czasu.
+
+W języku `R` mamy funkcję `glm`:
+
+```{r}
+model_1 = glm(
+  quality_bin ~ alcohol
+  , data = df
+  , family = binomial(link = 'logit')
+)
+coef(model_1)
+```
+
+Otrzymane w ten sposób współczynniki regresji są takie same jak te otrzymane za pomocą iteracji Newtona-Raphsona.
+
+```{r}
+model_2 = glm(
+  quality_bin ~ alcohol + residual.sugar + pH
+  , data = df
+  , family = binomial(link = 'logit')
+)
+summary(model_2)
+```
+
+Funkcja `summary` zwraca podobny wynik jak w przypadku modelu `lm`. Zamiast współczynnika determinancji $R^2$ mamy podane kryterium informacyjne Akaike.
+
+Funkcja `glm` w przypadku regresji logitycznej podaje współczynniki dla *non-reference level* danego faktora, w tym wypadku będzie to $Y=1$.
+
+Interpretacja współczynników regresji: wraz ze wzrostem stężenia alkoholu o jedną jednostkę logarytm szans rośnie średnio o $2.2709$. Alternatywnie, szanse rosną średnio o $e^{2.2709} = 9.6881$.
+
+## Miary dopasowania
+
+```{r}
+df = read.csv('datasets\\winequality-red.csv')
+df = df %>% mutate(quality_bin = if_else(quality > 5, 1, 0))
+
+set.seed(213)
+train_indices = sample(
+  1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+model_3 = glm(
+  quality_bin ~ .-quality
+  , data = df_train
+  , family = binomial(link = 'logit')
+)
+
+summary(model_3)
+
+y_hat_prob = predict(
+  model_3
+  , newdata = df_test
+  , type = 'response'
+)
+```
+
+Zarówno `fitted.values` w dopasowanym obiekcie kalsy `glm`, jak i wynik funkcji `predict` jest wartością z przedziału $[0,1]$, zatem musimy ustalić jakiś próg, aby zaklasyfikować prognozy do odpowiednich kategorii. Przyjmijmy na początek próg
+
+$$
+\begin{cases}
+\hat{Y} = 1 \quad \text{gdy} \ \hat{p}(X) > 0.5 \\
+\hat{Y} = 0 \quad \text{gdy} \ \hat{p}(X) \leq 0.5 
+\end{cases}
+$$
+
+```{r}
+y_true = df_test$quality_bin %>%
+  as.factor()
+
+y_hat = ifelse(y_hat_prob > 0.5, 1, 0) %>%
+  as.factor()
+
+levels(y_true) == levels(y_hat)
+```
+
+### Macierz kontyngencji
+
+**Macierz kontyngencji** podaje nam łączny rozkład zmiennej $Y$ oraz prognoz $\hat{Y}$. Poszczególne elementy tej macierzy nazywamy następująco:
+
+-   TP - *true positive* (1,1)
+
+-   FN - *false negative* (1,2)
+
+-   FP - *false positive* (2,1)
+
+-   TN - *true negative* (2,2)
+
+```{r}
+table(y_true, y_hat)
+```
+
+Na podstawie macierzy kontyngencji możemy obliczyć kilka miar dopasowania:
+
+-   Dokładność (ang. *accuracy*)
+
+    $$
+    \text{ACC} = \frac{\text{TP + TN}}{\text{P + N}}
+    $$
+
+-   Czułość (ang. *sensitivity*, *recall*)
+
+    $$
+    \text{TPR} = \frac{\text{TP}}{\text{P}}
+    $$
+
+-   Specyfikacja (ang. *specificity*)
+
+    $$
+    \text{TNR} = \frac{\text{TN}}{\text{N}}
+    $$
+
+-   Precyzja (ang. *precision*)
+
+    $$\text{PPV} = \frac{\text{TP}}{\text{PP}}$$
+
+-   Współczynnik $F_1$
+
+    $$ F_1 = \frac{\text{2TP}}{\text{2TP + FP + FN}} $$
+
+```{r}
+caret::confusionMatrix(
+  data = y_hat
+  , reference = y_true
+)
+```
+
+### Krzywa ROC
+
+Jako próg klasyfikacji przyjęliśmy $50\%$, aczkolwiek możemy przyjąć zupełnie inny próg. Zależnie od przedmiotu badań, ten próg może być mniejszy lub większy. Na przykład przy diagnozowaniu pacjentów, jeśli model przewiduje, że prawdopodobieństwo zachorowania pacjenta wynosi $10\%$, to klasyfikujemy go do grupy ryzyka i poddajemy dalszym badaniom.
+
+Jak zatem zmieniają się posczególne metryki błędów w zależności od przyjętego progu?
+
+-   ROC (*receiver operating characteristic*) - na osi $x$ zaznaczamy FPR, na osi $y$ zaznaczamy TPR
+
+-   AUC (*area under curve*) - pole pod wykresem ROC:
+
+    -   wartość $0.5$ miałby model który po prostu by strzelał, tzn. w sposób losowy przydzielał obserwacje do poszczególnych klas
+
+    -   wartość $1$ ma model idealnie odseparowujący obie klasy
+
+    -   wartość $0$ ma model, który przypisuje obserwacje do przeciwnej klasy (błąd w kodowaniu zmiennych?)
+
+Chcemy zatem aby AUC było jak największe i koniecznie powyżej wartości $0.5$.
+
+```{r}
+roc = data.frame(
+  Threshold = seq(0, 1, by = 0.01)
+  , TPR = NA
+  , FPR = NA
+)
+
+for (i in 1:nrow(roc)) {
+  
+  y_hat_i = ifelse(y_hat_prob > roc$Threshold[i], 'Yes', 'No') %>%
+    as.factor()
+  
+  conf_matrix = table(y_true, y_hat_i) %>% as.matrix()
+  
+  roc$TPR[i] = conf_matrix[1, 1] / sum(conf_matrix[1, ])
+  roc$FPR[i] = conf_matrix[2, 1] / sum(conf_matrix[2, ])
+  
+}
+
+ggplot(roc, aes(x = FPR, y = TPR)) +
+  geom_line(size = 1) +
+  geom_abline(intercept = 0, slope = 1) +
+  ylim(c(0,1))
+```
+
+```{r}
+pROC::auc(y_true, y_hat_prob)
+pROC::roc(y_true, y_hat_prob) %>% plot()
+```
+
+## Zadania
+
+1.  Jednym ze sposobów na zwiększenie *sensitivity* kosztem *specificity* jest przyjęcie mniejszego progu klasyfikacji. Innym sposobem jest zwiększenie wag obserwacjom z klasy *positive*. Jakie wagi należy przypisać dobrym winom ze zbioru `datasets\\winequality-red.csv`, aby osiągnąć *sensitivity* powyżej 90%? Wykorzystaj funkcję `glm` z parametrem `weights`.
+2.  Dopasuj model *elastic net* do zbioru danych `datasets\\winequality-red.csv`, tzn. znajdź parametry $\alpha, \lambda$, aby zminimalizować błąd generalizacji.
+3.  Dopasuj model regresji logistycznej, gdy zmienna celu $Y$ zawiera 3 klasy. Można wykorzystać np. zbiór danych `iris`.
+
+## Literatura
+
+-   ESL - rozdział 4.4
+
+-   ITSL - rozdział 4.2, 4.3
+
+-   <https://en.wikipedia.org/wiki/Sensitivity_and_specificity>

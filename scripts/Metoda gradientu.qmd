@@ -1,0 +1,254 @@
+---
+title: "Metoda gradientu"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+```{r}
+df = read.csv('datasets\\age_height.csv')
+ggplot(df, aes(x = age, y = height)) + 
+  geom_point() +
+  geom_smooth(method = 'lm', se = FALSE)
+```
+
+```{r}
+model = lm(height ~ age, data = df)
+model$coefficients
+mean(model$residuals^2)
+```
+
+## Metoda spadku wzdłuż gradientu
+
+Naszym celem jest minimalizacja funkcji $f: \mathbb{R}^d \to \mathbb{R}$. Zakładamy, że funkcja $f$ jest ciągła, różniczkowalna oraz wypukła.
+
+1.  Liczymy gradient $\nabla f$, czyli wektor pochodnych cząstkowych $\partial f / \partial x_j$ dla $j = 1, \dots d$.
+2.  Wybieramy punkt początkowy $x^{(0)} = [ x^{(0)}_1, \dots x^{(0)}_d ]$.
+3.  W $k$-tym kroku liczymy wartość gradientu w punkcie $x^{(k)}$.
+4.  Liczymy długość kroku: $s_k = \gamma \times \nabla f (x^{(k)})$. Wartość $\gamma$ nazywamy współczynnikiem uczenia (ang. *learning rate*).
+5.  Liczymy nową wartość $x^{(k+1)} = x^{(k)} - s_k$, czyli poruszamy się w przeciwnym kierunku do gradientu w danym punkcie (gradient wskazuje kierunek najszybszego wzrostu funkcji, a my szukamy minimum).
+6.  Powtarzamy kroki 2-5 aż do spełnienia jednego z warunków zatrzymania:
+    -   $| f(x^{(k+1)}) - f(x^{(k)}) | < \epsilon$
+    -   maksymalna ilość iteracji $k= k_{\max}$.
+
+W tym algorytmie kluczowy jest wybór wspólczynnika uczenia $\gamma$:
+
+-   jeśli $\gamma$ będzie za mała, to algorytm będzie wolno zbiegał do minimum
+
+-   jeśli $\gamma$ będzie za duża, to algorytm *przeskoczy* minimum.
+
+### Przykład: estymacja OLS
+
+Szukamy model liniowy postaci $y \simeq f(x) = \alpha + \beta x$ minimalizując (średnio)kwadratową funkcję straty na próbce danych indeksowanej $i \in \lbrace 1, \dots n \rbrace$:
+
+$$
+L(\alpha , \beta) = \frac{1}{n} \sum_{i=1}^n \left( y_i - \alpha - \beta x_i \right)^2 \longrightarrow \min
+$$
+
+Liczymy pochodne cząstkowe po $\alpha$ oraz $\beta$:
+
+$$
+\frac{\partial L}{\partial \alpha} = \frac{1}{n} \sum_{i=1}^n \frac{\partial}{\partial \alpha }\left(y_i - \alpha - \beta x_i \right)^2 = \\
+\frac{2}{n} \sum_{i=1}^n \left( y_i - \alpha - \beta x_i \right) = \frac{2}{n} \sum_{i=1}^n e_i
+$$
+
+$$
+\frac{\partial L}{\partial \beta } = \frac{2}{n} \sum_{i=1}^n e_i \ x_i
+$$
+
+gdzie $e_i$ są resztami modelu $e_i = y_i - f(x_i) = y_i -\alpha - \beta x_i$.
+
+```{r}
+gamma = 0.0015 # learning rate
+epsilon = 0.0000001 # kryterium stopu 1
+iter_max = 1e5 # kryterium stopu 2
+
+# Inicjalizacja wektorów do przechowywania wyników
+alpha = numeric(length = iter_max)
+beta = numeric(length = iter_max)
+mse = numeric(length = iter_max)
+best_error = Inf
+
+# Wartości początkowe
+alpha[1] = 0
+beta[1] = 0
+
+for (i in 2:iter_max) {
+  
+  y_hat = alpha[i-1] + beta[i-1] * df$age
+  residuals = y_hat - df$height
+  mse[i-1] = mean(residuals^2)
+  
+  if (mse[i-1] > best_error) {
+    cat('MSE increased at iteration', i)
+    break
+  }
+  
+  if (i > 3) {
+    if (abs(mse[i-2] - mse[i-1]) < epsilon) {
+      break
+    }
+  }
+  
+  gradient = c(
+    (2 / nrow(df)) * sum(residuals)
+    , (2 / nrow(df)) * sum(residuals * df$age)
+  )
+  
+  alpha[i] = alpha[i-1] - gamma * gradient[1]
+  beta[i] = beta[i-1] - gamma * gradient[2]
+  
+  best_error = mse[i-1]
+  # cat(i, 'MSE:', mse, '\n')
+}
+
+alpha[i-1]; beta[i-1]; mse[i-1]
+```
+
+```{r}
+df_gradient_descent = tibble(
+  Iteration = 1:iter_max
+  , alpha = alpha
+  , beta = beta
+  , MSE = mse
+)
+
+ggplot(df_gradient_descent, aes(x = Iteration, y = MSE)) +
+  geom_point()
+
+ggplot(df, aes(x = age, y = height)) +
+  geom_point() +
+  geom_abline(
+    data = df_gradient_descent %>%
+      filter(Iteration %in% c(1:5, 1e2, 1e3, 1e4, 5e4:1e5))
+    , aes(intercept = alpha, slope = beta)
+    , color = 'red'
+  ) +
+  geom_abline(
+    data = df_gradient_descent %>%
+      filter(Iteration %in% c(1e5))
+    , aes(intercept = alpha, slope = beta)
+    , color = 'green'
+    , linewidth = 2
+  )
+```
+
+```{r}
+df_coefficients = tibble(
+  Iteration = 1:iter_max
+  , alpha = alpha
+  , beta = beta
+) %>%
+  pivot_longer(
+    cols = 2:3
+    , names_to = 'Coefficient'
+    , values_to = 'Value'
+  )
+
+ggplot(df_coefficients, aes(x = Iteration, y = Value)) +
+  geom_point(aes(color = Coefficient)) +
+  geom_hline(
+    yintercept = model$coefficients[1]
+    , linetype = 'dashed'
+    , linewidth = 1
+  ) +
+  geom_hline(
+    yintercept = model$coefficients[2]
+    , linetype = 'dashed'
+    , linewidth = 1
+  ) +
+  theme(legend.position = c(0.7, 0.7))
+```
+
+## Metoda stochastycznego spadku wzdłuz gradientu
+
+Gdy zbiór danych jest duży, to powyższy algorytm może być czasochłonny obliczeniowo:
+
+-   dużo predyktorów $d$ oznacza liczenie dużej ilość pochodnych cząstkowych
+
+-   duża ilość obserwacji $n$ oznacza liczenie wartości tych pochodnych w wielu punktach.
+
+Aby przyspieszyć obliczenia liczymy wartości pochodnych tylko w losowo wybranych punktach, tzw. *mini-batch* (może to być nawet jeden losowo wybrany punkt).
+
+```{r}
+gamma = 0.0015 # learning rate
+epsilon = 0.06 # kryterium stopu 1
+iter_max = 1e5 # kryterium stopu 2
+batch_size = 1
+
+# Inicjalizacja wektorów do przechowywania wyników
+sgd_alpha = numeric(length = iter_max)
+sgd_beta = numeric(length = iter_max)
+sgd_mse = numeric(length = iter_max)
+best_error = Inf
+
+# Wartości początkowe
+sgd_alpha[1] = 0
+sgd_beta[1] = 0
+
+set.seed(213)
+for (i in 2:iter_max) {
+  
+  # Losowanie mini-batcha
+  sample_indices = sample(
+    1:nrow(df)
+    , size = batch_size
+    , replace = FALSE
+  )
+  
+  # Reszty z mini-batcha
+  y_hat_batch = sgd_alpha[i-1] + sgd_beta[i-1] * df$age[sample_indices]
+  residuals_batch = y_hat_batch - df$height[sample_indices]
+  
+  # Reszty globalne, możemy pominąć jeśli nie chcemy kryterium stopu nr 1
+  y_hat = sgd_alpha[i-1] + sgd_beta[i-1] * df$age
+  residuals = y_hat - df$height
+  sgd_mse[i-1] = mean(residuals^2)
+  
+  if (i > 3) {
+    if (sgd_mse[i-1] < epsilon) {
+      break
+    }
+  }
+  
+  # Gradient na mini-batchu
+  gradient = c(
+    (2 / nrow(df)) * sum(residuals_batch)
+    , (2 / nrow(df)) * sum(residuals_batch * df$age[sample_indices])
+  )
+  
+  sgd_alpha[i] = sgd_alpha[i-1] - gamma * gradient[1]
+  sgd_beta[i] = sgd_beta[i-1] - gamma * gradient[2]
+  
+  best_error = sgd_mse[i-1]
+  # cat(i, 'MSE:', mse, '\n')
+}
+
+sgd_alpha[i-1]; sgd_beta[i-1]; sgd_mse[i-1]
+```
+
+```{r}
+df_comparison = tibble(
+  Iteration = 1:iter_max
+  , GD = mse
+  , SGD = sgd_mse
+) %>%
+  pivot_longer(
+    cols = 2:3
+    , names_to = 'Method'
+    , values_to = 'MSE'
+  )
+
+ggplot(df_comparison, aes(x = Iteration, y = MSE)) +
+  geom_point(aes(color = Method)) +
+  xlim(c(1e3, iter_max)) +
+  ylim(c(0, 500)) +
+  theme(legend.position = c(0.7, 0.7))
+```

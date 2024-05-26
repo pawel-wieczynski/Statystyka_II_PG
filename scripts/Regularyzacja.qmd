@@ -1,0 +1,487 @@
+---
+title: "Regularyzacja: ridge, lasso, elastic net"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, glmnet)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Zarys problemu
+
+Metody *forward selection* oraz *backward selection* są procedurami dyskretnymi, tzn. dodajemy lub odejmujemy kolejne zmienne objaśniające. Dyskretność tego procesu oznacza, że możemy mieć do czynienia z wysoką wariancją. Metody regularyzacji, które omówimy sprawią, że dobór zmiennych objaśniających będzię procedurą ciągłą, co prowadzi do obniżenia wariancji modelu.
+
+Pamiętamy, że duża wariancja idzie często w parze z niskim obciążeniem modelu. Rozważmy następujący przykład. Zbiór danych *gene_expression* zawiera informacje na temat współczynnika genetycznego pewnej choroby (zmienna $Y$) oraz ekspresji genów (zmienne $\mathbf{X}$) dla 1000 pacjentów.
+
+```{r}
+df = read.csv('datasets\\gene_expression.csv')
+```
+
+Dzielimy dane na zbiór treningowy oraz zbiór testowy.
+
+```{r}
+set.seed(213)
+train_index = sample(1:nrow(df), 0.75 * nrow(df), replace = FALSE)
+df_train = df[train_index, ]
+df_test = df[-train_index, ]
+```
+
+Dopasowujemy model regresji liniowej.
+
+```{r}
+model_1 = lm(disease_indicator ~ ., data = df_train)
+```
+
+Prognozujemy na zbiorze testowym.
+
+```{r}
+y_hat = predict(model_1, newdata = df_test)
+```
+
+Poniżej widzimy, że funkcja straty na zbiorze treningowym wynosi $0$ (małe obciążenie), natomiast funkcja straty na zbiorze testowym ma bardzo dużą wartość. Model został przetrenowany (ang. *overfitting*). Jak pamiętamy, do tego zjawiska może dojść, gdy model jest zbyt złożony. Ale regresja liniowa jest dosyć prostym modelem! W przypadku nawet prostych modeli może dojść do przetrenowania, gdy mamy wiecej zmiennych objaśniających $d$ niż obserwacji $n$, tak jak w tym przypadku.
+
+```{r}
+# MSE treningowy
+mean(model_1$residuals^2)
+# MSE testowy
+mean( (df_test$disease_indicator - y_hat)^2 )
+```
+
+### Wizualizacja problemu w 2D
+
+Poniżej generujemy przykładowy zbiór danych, gdzie mamy 7 obserwacji oraz:
+
+$$
+y = 2 x + 1 + \epsilon, \quad \epsilon \sim \mathcal{N}(0,1)
+$$
+
+Przyjmijmy, że w momencie estymacji modelu $\hat{f}$ dysponujemy jedynie dwoma obserwacjami. Czyli mamy do czynienia z przypadkiem $d \geq n$, gdzie $d=2$ (uwzględniając wyraz wolny) oraz $n=2$. Wówczas linia regresji będzie przechodzić dokładnie przez te dwa punkty, co jest równoznaczne z tym, że obciążenie na zbiorze treningowym jest równe $0$.
+
+```{r}
+set.seed(222)
+sample_size = 7
+df_sample = tibble(
+  x = 1:sample_size
+  , y = 2*x + 1 + rnorm(sample_size)
+  , set = c('test', rep('train', 2), rep('test', sample_size - 3))
+)
+
+model_sample = lm(
+  y ~ x
+  , data = df_sample %>% filter(set == 'train')
+)
+
+ggplot(df_sample, aes(x = x, y = y)) +
+  geom_point(aes(color = set), size = 3) +
+  geom_abline(
+    intercept = model_sample$coefficients[1]
+    , slope = model_sample$coefficients[2]
+    , size = 1
+  )
+  # geom_smooth(
+  #   data = subset(df_sample, set == 'train')
+  #   , method = 'lm'
+  #   , se = FALSE
+  # )
+```
+
+Model $\hat{f}$ ma postać:
+
+$$
+\hat{y} = \hat{f} (x) = - 1.768 + 3.383 \times x
+$$
+
+czyli widzimy, że oba współczynniki $\hat{\beta}$ znacząco różnią się od prawdziwych współczynników $\beta$ występujących w funkcji $f$.
+
+```{r}
+summary(model_sample)
+```
+
+Błąd na zbiorze testowym:
+
+```{r}
+y_hat_sample = predict(
+  model_sample
+  , newdata = df_sample %>% filter(set == 'test')
+)
+
+mean( (df_sample %>% filter(set == 'test') %>% pull(y) - y_hat_sample)^2 )
+```
+
+Jeśli wybralibyśmy inny zbiór treningowy (np. $x \in \lbrace 3, 4 \rbrace$), to model $\hat{f}$ miałby zupełnie inną postać, co oznacza że wariancja tego modelu jest duża. Natomiast obciążenie nadal by wynosiło $0$.
+
+## Regresja grzbietowa (ridge regression)
+
+Spróbujmy zwiększyć obciążenie, karając model za zbyt wysokie wartości współczynników $\hat{\beta}$. Możemy to osiągnąć poprzez dodanie obciążenia do estymatora OLS:
+
+$$
+\sum_{i=1}^n \left( y_i - \beta_0 - \sum_{j=1}^d x_{ij} \beta_j \right)^2 + \lambda \sum_{j=1}^d \beta_j^2 \longrightarrow \min
+$$
+
+gdzie $\lambda \geq 0$. Stosując zapis macierzowy, funkcja straty przyjmuje postać:
+
+$$
+L\left( \beta \right) = \left( \mathbf{y} - \mathbf{X} \beta \right)^\intercal \left( \mathbf{y} - \mathbf{X} \beta \right) + \lambda \beta^\intercal \beta = 
+\left| \left| \ \mathbf{X} \beta - \mathbf{y} \  \right| \right|^2_2 + 
+\lambda \ \left| \left| \ \beta \  \right| \right|^2_2
+\longrightarrow \min
+$$
+
+Liczymy gradient funkcji straty i przyrównujemy go do zera:
+
+$$
+\nabla L\left( \beta \right) = -2 \mathbf{X}^\intercal \left( \mathbf{y} - \mathbf{X} \beta \right) + 2 \lambda \beta = 0
+$$
+
+co po odpowiednich przekształceniach daje nam estymator
+
+$$
+\hat{\beta} = \left( \mathbf{X}^\intercal \mathbf{X} + \lambda I \right)^{-1} \mathbf{X}^\intercal \mathbf{y}
+$$
+
+Parametr $\lambda$ jest tzw. współczynnkiem kary. Im większa wartość, tym bardzie karamy duże wartości współczynników $\hat{\beta}$. Naszym zadaniem jest znalezienie optymalnej wartości parametrów $\lambda$, która będzie minimalizować błąd generalizacji $\text{Err}$.
+
+Zwizualizujemy linie regresji dla kilku wybranych wartości parametru $\lambda$:
+
+```{r}
+# Funkcja rozwiazujaca rownanie regresji grzbietowej
+ridge_solve = function(X, y, lambda) {
+  dim = dim(t(X) %*% X)[1]
+  betas = solve( t(X) %*% X + lambda * diag(dim) ) %*% t(X) %*% y
+  return(as.numeric(betas))
+}
+
+# Przypisanie obiektow X, y
+X = cbind(1, df_sample %>% filter(set == 'train') %>% pull(x)) %>% 
+  as.matrix()
+
+y = df_sample %>% filter(set == 'train') %>% pull(y) %>% 
+  as.matrix()
+
+# Obliczenie wspolczynnikow beta
+ridge_results = tibble(lambda = c(0, 1, 5, 10)) %>%
+  rowwise() %>%
+  mutate(
+    beta_0 = ridge_solve(X, y, lambda)[1]
+    , beta_1 = ridge_solve(X, y, lambda)[2]
+  )
+
+ridge_results
+
+# Wizualizacja
+ggplot(df_sample, aes(x = x, y = y)) +
+  geom_point(aes(shape = set), size = 3) +
+  geom_abline(
+    data = ridge_results
+    , aes(
+      intercept = beta_0
+      , slope = beta_1
+      , color = as.factor(lambda)
+    )
+    , size = 1
+  ) +
+  labs(color = 'lambda')
+```
+
+### Wybór optymalnego parametru $\lambda$
+
+Zastosujmy metodę walidacji krzyżowej do wyboru optymalnego parametru $\lambda$ dla zbioru danych `gene_expression`.
+
+```{r}
+X_train = df_train %>% select(-disease_indicator) %>% as.matrix()
+X_test = df_test %>% select(-disease_indicator) %>% as.matrix()
+
+y_train = df_train %>% select(disease_indicator) %>% as.matrix()
+y_test = df_test %>% select(disease_indicator) %>% as.matrix()
+
+model_ridge = cv.glmnet(
+  x = X_train
+  , y = y_train
+  , alpha = 0 # Ridge regression
+  , nfolds = 5
+)
+
+model_ridge
+```
+
+```{r}
+y_hat_train = predict(
+  model_ridge
+  , s = model_ridge$lambda.min
+  , newx = X_train
+)
+
+y_hat_test = predict(
+  model_ridge
+  , s = model_ridge$lambda.min
+  , newx = X_test
+)
+```
+
+```{r}
+# MSE treningowy
+mean( (y_hat_train - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test - y_test)^2 )
+```
+
+### Reguła 1SE w walidacji krzyżowej
+
+Minimalizacja błędu walidacji krzyżowej może prowadzić do przetrenowania modelu. W praktyce często stosuje się tzw. *1SE rule*, gdzie wybieramy najprostszy model, którego błąd walidacji krzyżowej jest nie większy niż jeden błąd standardowy powyżej modelu z najmniejszym błędem. Zazwyczaj prostsze modele lepiej poddają się generalizacji na nowe dane.
+
+```{r}
+y_hat_train_1se = predict(
+  model_ridge
+  , s = model_ridge$lambda.1se
+  , newx = X_train
+)
+
+y_hat_test_1se = predict(
+  model_ridge
+  , s = model_ridge$lambda.1se
+  , newx = X_test
+)
+
+# MSE treningowy
+mean( (y_hat_train_1se - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test_1se - y_test)^2 )
+```
+
+## Regresja lasso
+
+Do estymatora OLS dodajemy obciążenie, podobnie jak w regresji grzbietowej, ale zamiast kwadratu dajemy moduł:
+
+$$ \sum_{i=1}^n \left( y_i - \beta_0 - \sum_{j=1}^d x_{ij} \beta_j \right)^2 + \lambda \sum_{j=1}^d | \beta_j | \longrightarrow \min $$
+
+Stosując zapis macierzowy, funkcja straty przyjmuje postać:
+
+$$ L\left( \beta \right) =  \left| \left| \ \mathbf{X} \beta - \mathbf{y} \  \right| \right|^2_2 +  \lambda \ \left| \left| \ \beta \  \right| \right|_1 \longrightarrow \min $$
+
+Funkcja $f(x) = |x|$ nie jest różniczkowalna dla $x = 0$, zatem dla powyższej funkcji straty nie istnieje rozwiązanie analityczne. Można zastosować algorytmy optymalizacyjne, np. programowanie kwadratowe, aby wyznaczyć współczynniki $\hat{\beta}$.
+
+```{r}
+model_lasso = cv.glmnet(
+  x = X_train
+  , y = y_train
+  , alpha = 1 # Lasso regression
+  , nfolds = 5
+)
+
+model_lasso
+```
+
+```{r}
+y_hat_train = predict(
+  model_lasso
+  , s = model_lasso$lambda.min
+  , newx = X_train
+)
+
+y_hat_test = predict(
+  model_lasso
+  , s = model_lasso$lambda.min
+  , newx = X_test
+)
+
+# MSE treningowy
+mean( (y_hat_train - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test - y_test)^2 )
+```
+
+```{r}
+y_hat_train_1se = predict(
+  model_lasso
+  , s = model_lasso$lambda.1se
+  , newx = X_train
+)
+
+y_hat_test_1se = predict(
+  model_lasso
+  , s = model_lasso$lambda.1se
+  , newx = X_test
+)
+
+# MSE treningowy
+mean( (y_hat_train_1se - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test_1se - y_test)^2 )
+```
+
+Otrzymalismy dużo mniejszy błąd generalizacji niż w przypadku regresji grzbietowej. Sprawdźmy współczynniki oszacowanych modeli.
+
+```{r}
+coef_ridge = coef(model_ridge, s = model_ridge$lambda.1se)
+coef_lasso = coef(model_lasso, s = model_lasso$lambda.1se)
+
+coefs_df = data.frame(
+  Variable = coef_ridge@Dimnames[[1]]
+  , Beta_Ridge = coef_ridge@x
+) %>%
+  left_join(
+    data.frame(
+      Variable = coef_lasso@Dimnames[[1]][coef_lasso@i + 1]
+      , Beta_Lasso = coef_lasso@x
+    )
+  )
+```
+
+W regresji grzbietowej niektóre wartości współczynników $\hat{\beta}$ są bliskie $0$, ale nigdy nie osiągają tej wartości - metoda regresji grzbietowej pozwala tylko na dojście asymptotycznie blisko do $0$. W przypadku regresji lasso dostajemy zerowe współczynniki - daje nam to bardzo przydatną własność, mianowicie lasso działa jak **selektor zmiennych**.
+
+## Norma $L^p$
+
+Dla dowolnej liczny rzeczywistej $p \geq 1$ normę $L^p$ wektora $\beta = (\beta_1, \dots \beta_d )$ definiujemy jako:
+
+$$
+|| \beta ||_p = \left( |\beta_1|^p + \dots |\beta_d|^p \right)^{1/p}
+$$
+
+Zatem kara nakładana na wektor $\beta$ w regresji grzbietowej jest normą $L^2$, natomiast w regresji lasso jest normą $L^1$.
+
+Funkcję straty możemy zapisać jako funkcję straty OLS z ograniczeniem na parametry $\beta$ dla regresji grzbietowej:
+
+$$
+\sum_{j=1}^d \left( \beta_j \right)^2 \leq c
+$$
+
+lub dla regresji lasso:
+
+$$
+\sum_{j=1}^d \left| \beta_j \right| \leq c
+$$
+
+W tym alternatywnym zapisie stała $c$ jest odwrotnie proporcjonalna do parametru $\lambda$. Zauważmy, że dla $d=2$ ograniczenie w regresji grzbietowej jest dane równaniem $\beta_1^2 + \beta_2^2 \leq c$, co jest równaniem okręgu o środku w początku układu współrzędnych oraz promieniu równym $c$.
+
+Można wykazać, że kombinacje $\beta_1, \beta_2$ dające tą samą wartość błędu średniokwadratowego tworzą elipsy. Zmniejszając $c$ (czyli zwiększając $\lambda$) ograniczamy zakres dopuszczalnych rozwiązań $\beta_1, \beta_2$. Przy odpowiedniu dużym $c$ (lub odpowiednio małym $\lambda$ rozwiązanie regresji grzbietowej może być tożsame z rozwiązaniem OLS ($\hat{\beta}$ na rysunku poniżej).
+
+![Źródło: ESL, s.71](images/esl_regularization.PNG){fig-align="center"}
+
+Zobaczmy jak kształt obszaru dopuszczalnych parametrów $\beta$ wygląda dla różnych wartości $q$. Możemy wybrać $q<1$, ale wówczas nie będzie spełniało to definicji normy. Ponadto dla $q<1$ otrzymamy zbiór nie będzie zbiorem wypukłym, co sprawia trudności przy zadaniach optymalizacyjnych.
+
+```{r}
+gen_norm = function(x, q) {(1 - abs(x^q))^(1/q)}
+
+q_norms = c(0.3, 0.5, 1, 2, 3, 5, 20) %>% map_df(~ {
+  q = .x
+  points = tibble(
+    x = seq(0, 1, by = 0.001),
+    y = gen_norm(x, q),
+    q = q
+  )
+  bind_rows(points, points %>% mutate(y = -y),
+            points %>% mutate(x = -x),
+            points %>% mutate(x = -x, y = -y))
+}) %>% mutate(q = as.factor(q)) %>%
+  arrange(q, y, x)
+ggplot(q_norms, aes(x, y, color = q, group = q)) + theme_bw() + geom_point()
+  
+```
+
+## Elastic net
+
+Aby uzyskać korzyści płynące z regresji grzbietowej (penalizacja skorelowanych zmiennych objaśniających) oraz regresji lasso (selekcja zmiennych), moglibyśmy wybrać $q \in (1,2 )$. Niestety, wówczas funkcja straty będzie różniczkowalna, zatem nie zadziała jak selektor zmiennych.
+
+Regularyzacja *elastic-net* do funkcji straty dodaje średnią ważoną norm $L^1$ oraz $L^2$:
+
+$$
+\sum_{i=1}^n \left( y_i - \beta_0 - \sum_{j=1}^d x_{ij} \beta_j \right)^2 + \lambda \sum_{j=1}^d \left( (1-\alpha) \beta_j^2 +  \alpha |\beta_j| \right) \longrightarrow \min
+$$
+
+```{r}
+model_elnet = cv.glmnet(
+  x = X_train
+  , y = y_train
+  , alpha = 0.5
+  , nfolds = 5
+)
+
+model_elnet
+```
+
+```{r}
+y_hat_train = predict(
+  model_elnet
+  , s = model_elnet$lambda.min
+  , newx = X_train
+)
+
+y_hat_test = predict(
+  model_elnet
+  , s = model_elnet$lambda.min
+  , newx = X_test
+)
+
+# MSE treningowy
+mean( (y_hat_train - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test - y_test)^2 )
+```
+
+```{r}
+y_hat_train_1se = predict(
+  model_elnet
+  , s = model_elnet$lambda.1se
+  , newx = X_train
+)
+
+y_hat_test_1se = predict(
+  model_elnet
+  , s = model_elnet$lambda.1se
+  , newx = X_test
+)
+
+# MSE treningowy
+mean( (y_hat_train_1se - y_train )^2 )
+# MSE testowy
+mean( (y_hat_test_1se - y_test)^2 )
+```
+
+## Zadania
+
+1.  Zarówno regresja grzbietowa jak i regresja lasso są wrażliwe na skalę, na jakiej znajdują się zmienne objaśniające (*not scale-invariant*). Wygenerujmy model dany równaniem $y = 2 x_1 + 3 x_2 + \epsilon$. Dopasuj do poniższych danych model OLS oraz Ridge (przyjmij $\lambda = 0.1$).
+
+```{r}
+set.seed(213)
+n = 100
+x1 = rnorm(n)
+x2 = rnorm(n)
+X = as.matrix(data.frame(x1, x2))
+y = 2*x1 - 3*x2 + rnorm(n) # True model
+```
+
+Teraz pomnożymy zmienną $x_1$ razy $100$. Dopasuj ponownie model OLS oraz Ridge ($\lambda = 5$). Co się stało ze współczynnikami $\beta$?
+
+```{r}
+x1_scaled = x1 * 100
+X_scaled = as.matrix(data.frame(x1_scaled, x2))
+```
+
+2.  Zbadaj jak zachowują się parametry $\beta$ dla różnych wartości parametry $\lambda$ w regresji grzbietowej, gdy zmienne objaśniające są ze sobą silnie skorelowane.
+
+```{r}
+set.seed(213)
+
+n = 100
+x1 = rnorm(n)
+x2 = -x1 + rnorm(n, sd=0.5)
+beta_1 = 1000  # Large positive coefficient for x1
+beta_2 = -1500 # Large negative coefficient for x2
+X = as.matrix(data.frame(x1, x2))
+y = beta_1*x1 + beta_2*x2 + rnorm(n) # True model
+```
+
+3.  Znaleźć optymalny parametr $\alpha$ dla `model_elnet`. Wskazówka w dokumentacji funkcji `cv.glmnet`.
+
+## Literatura
+
+-   ESL - rozdział 3.4
+
+-   ITSL - rozdział 6.2
+
+-   [An Introduction to `glmnet`](https://glmnet.stanford.edu/articles/glmnet.html)

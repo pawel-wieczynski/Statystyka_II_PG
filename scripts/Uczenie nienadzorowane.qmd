@@ -1,0 +1,454 @@
+---
+title: "Uczenie nienadzorowane"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, factoextra, cluster, Rtsne, gridExtra)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+Do tej pory zbiór danych $\mathcal{D}$ był realizacją wektora losowego $(X, Y) \in \mathbb{R}^{d+1}$, a jakość dopasowania modelu $f(X) \simeq Y$ ocenialiśmy na podstawie wartości funkcji straty $L(f)$. W przypadku uczenia nienadzorowanego mamy do dyspozycji jedynie realizację wektora losowego $X \in \mathbb{R}^d$, a naszym celem może być odkrycie pewnej struktury występującej w danych. Przykłady algorytmów uczenia nienadzorowanego to:
+
+1.  Redukcja wymiarów, tzn. znalezienie $m$-wymiarowej ($m<d$) reprezentacji danych tak aby zachować jak najwięcej *informacji*:
+
+    -   analiza składowych głównych (PCA, *principal component analysis*)
+
+    -   analiza składowych niezależnych (ICA, *independent component analysis*)
+
+    -   algorytm t-SNE (*t-distributed stochastic neighbor embeddings*)
+
+    -   sieci neuronowe typu autoencoders.
+
+2.  Grupowanie danych / segmentacja obiektów:
+
+    -   grupowanie wokół centroidów, np. *k-means clustering*
+
+    -   grupowanie hierarchiczne
+
+    -   algorytm DBSCAN (*density based spatial clustering of applications with noise*).
+
+3.  Analiza koszykowa, np. algorytm *apriori*.
+
+## Analiza składowych głównych
+
+Cel: znalezienie niskowymiarowej reprezentacji danych przy zachowaniu jak największej ilości informacji występującej w zbiorze danych $\mathcal{D}$. Oznacza to, że szukamy $m<d$ nowych zmiennych, będących kombinacjami liniowymi oryginalnych zmiennych:
+
+$$
+PC_1 = w_{11} X_1 + \dots + w_{d1} X_d = w_1^\intercal x \\
+PC_2 = w_{12} X_1 + \dots + w_{d2} X_d = w_2^\intercal x \\
+\dots \\
+PC_m = w_{1m} X_1 + \dots + w_{dm} X_d  = w_m^\intercal x
+$$ takich, że:
+
+-   $PC_k \perp PC_j$ dla $k \neq j$, to znaczy, że poszczególne składowe główne są ze sobą nieskorelowane
+
+-   $\sum_{j=1}^d w_{jk}^2 = w_k^\intercal w_k = 1$ dla $k=1, \dots, m$, to znaczy, że wagi są unormowane.
+
+### Metoda mnożników Lagrange'a
+
+Przyjrzyjmy się pierwszej składowej głównej $PC_1$. Jej wariancja wynosi:
+
+$$
+ S^2 (PC_1) = \sum_{k=1}^d \sum_{j=1}^d w_{j1} w_{k1} s_{jk} = w_1^\intercal S w_1 \longrightarrow \max
+$$
+
+Definiujemy funkcję Lagrange'a:
+
+$$
+L(w_1) = S^2 (PC_1) + \lambda_1 (1 - w_1^\intercal w) =  w_1^\intercal S  w_1 + \lambda_1 (1 - w_1^\intercal w)
+$$
+
+Liczymy podchodną i przyrównujemy ją do zera:
+
+$$
+\frac{\partial L}{\partial w_1} = 2 S w_1 - 2 \lambda_1 w_1 = 2(S - \lambda_1I) w_1 = 0
+$$
+
+Mamy zatem układ $d$ równań liniowych, którego rozwiązniem jest ($\lambda\neq 0$):
+
+$$
+S w_1 = \lambda_1 w_1
+$$ Zauważmy, że $\lambda_1$ jest wartością własną macierzy kowariancji $S$, a $w_1$ jest wektorem własnym odpowiadającym tej wartości własnej. Mnożymy obustronnie przez $w_1^\intercal$:
+
+$$
+w_1^\intercal S w_1 = \lambda_1 w_1^\intercal w_1^\intercal
+$$
+
+co można uprościć jako $$
+S^2(PC_1) = \lambda_1
+$$ Zatem **pierwsza składowa główna jest wektorem własnym odpowiadającym największej wartości własnej macierzy kowariancji** $S$ (największą, ponieważ chcemy maksymalizować wariancję). Przy wyznaczaniu kolejnych składowych głównych musimy dodać warunek ortogonalności do funkcji Lagrange'a:
+
+$$
+L (w_2) = S^2 (PC_2) + \lambda_2 (1 - w_2^\intercal w_2) + \pi w_1^\intercal w_2
+$$Rozwiązując $L(w_2)$ w analogiczny sposób, dojdziemy do wniosku, że $PC_2$ jest wektorem własnym odpowiadającym drugiej największej wartości własnej macierzy kowariancji $S$.
+
+### Implementacja w `R`
+
+```{r}
+data(mtcars)
+
+# Standaryzujemy dane (srednia = 0, wariancja = 1)
+mtcars_normalized = scale(mtcars)
+
+# Liczymy macierz kowariancji na ustandaryzowanych danych
+S = cov(mtcars_normalized)
+
+# Liczymy wektory własne oraz wartości własne
+decomp = eigen(S)
+
+# Ile procent wariancji zostało wyjaśnione przez składowe
+decomp$values / sum(decomp$values)
+```
+
+Gotowa implementacja w funkcji `prcomp`:
+
+```{r}
+model_pca = prcomp(
+  mtcars
+  , scale. = TRUE
+  , center = TRUE
+)
+
+model_pca
+summary(model_pca)
+```
+
+Wizualizacja PCA:
+
+```{r}
+# Procent wariancji wyjaśniony przez składowe główne
+fviz_eig(model_pca)
+
+# Wizualizacja danych rzutowanych na dwie wybrane składowe główne
+fviz_pca_ind(model_pca, axes = c(1, 2))
+
+# Wizualizacja ładunków dwóch wybranych składowych głównych
+fviz_pca_var(model_pca, axes = c(1, 2))
+```
+
+## Algorytm *t-SNE*
+
+Analiza składowych głównych świetnie się sprawdza w przypadku prostych zbiorów danych w formie tabelarycznej, natomiast gorzej sobie radzi w przypadku złożonych zbiorów danych, np. tekst, obrazy, dźwięk. W takim wypadku możemy skorzystać z nieliniowych metod redukcji wymiaru.
+
+Jedną z często stosowanych metod jest *t-SNE*. Polega ona na znalezieniu niskowymiarowej (najczęściej $2$ lub $3$) reprezentacji danych poprzez minimalizację dywergencji Kullbacka-Leiblera, która jest jedną z miar odległości między dwoma rozkładami prawdopodobieństwa.
+
+Liczymy prawdopodobieństwa warunkowe:
+
+$$
+p_{i_2 | i_1} = \frac{ \exp( - ||x_{i_1} - x_{i_2} ||^2  / 2\sigma_{i_1}^2) }{ \sum_{i \neq i_1} \exp( - ||x_{i_1} - x_{i} ||^2 / 2\sigma_{i_1}^2) }
+$$
+
+oraz $p_{i_1 | i_1 } = 0$. Możemy to interpretować jako prawdopodobieństwo, że obserwacja $x_{i_1}$ wybierze obserwację $x_{i_2}$ jako swojego sąsiada pod warunkiem, że sąsiedzi są losowani z gęstości rozkładu normalnego o średniej $x_{i_1}$.
+
+Następnie definiujemy prawdopodobieństwo
+
+$$
+p_{i_1 i_2} = \frac{p_{i_2 | i_1} + p_{i_1 | i_2} }{2n}
+$$
+
+Następnie szukamy podobne odwzorowanie w przestrzeni niskowymiarowej:
+
+$$
+q_{i_1i_2} = \frac{\left( 1 + ||y_{i_1} - y_{i_2}||^2 \right)^{-1}}{\sum_i \sum_{k\neq i} \left( 1 + ||y_{i} - y_{k}||^2 \right)^{-1}}
+$$
+
+oraz $q_{i_1i_1} = 0$, takie aby zminimalizować odległość między oboma rozkładami prawdopodobieństwa:
+
+$$
+\text{KL}(\mathbb{P} \ || \ \mathbb{Q}) = \sum_{i_1 \neq i_2} p_{i_1 i_2} \ln \frac{p_{i_1i_2}}{q_{i_1i_2}} \longrightarrow \min
+$$
+
+### Implementacja w `R`
+
+Zbiór danych `mnist` zawiera zdjęcia cyfr 0-9 zapisanych odręcznie. Zdjęcia są w formacie 28x28 pikseli, zaś każdy piksel jest zakodowany jako odcień szarości w skali 0-255.
+
+```{r}
+mnist = read_csv('datasets\\mnist.csv')
+```
+
+Wizualizacja fragmentu zbioru danych:
+
+```{r}
+# Stworzenie ramki danych ze współrzędnymi dla siatki 28x28
+xy_axis = data.frame(
+  x = expand.grid(1:28, 28:1)[, 1]
+  , y = expand.grid(1:28, 28:1)[, 2]
+)
+
+# Konfiguracja wykresu
+plot_theme = list(
+  raster = geom_raster(hjust = 0, vjust = 0)
+  , gradient_fill = scale_fill_gradient(low = "white", high = "black", guide = FALSE)
+  , theme = theme(
+    axis.line = element_blank()
+    , axis.text = element_blank()
+    , axis.ticks = element_blank()
+    , axis.title = element_blank()
+    , panel.background = element_blank()
+    , panel.border = element_blank()
+    , panel.grid.major = element_blank()
+    , panel.grid.minor = element_blank()
+    , plot.background = element_blank()
+  )
+)
+
+# Stworzenie wykresów
+set.seed(213)
+sample_plots = sample(1:nrow(mnist), 25) %>% map(~ {
+  plot_data = cbind(xy_axis, fill = t(mnist[.x, -1]))
+  ggplot(plot_data, aes(x, y, fill = fill)) + plot_theme
+})
+
+# Wyświetlenie wykresów
+do.call('grid.arrange', c(sample_plots, ncol = 5, nrow = 5))
+```
+
+Analiza składowych głównych dla zbioru danych `mnist`:
+
+```{r}
+mnist_pca = prcomp(mnist[ , -1])
+t1 = summary(mnist_pca)$importance
+
+mnist_pca = mnist_pca$x[ , 1:2] %>% 
+  as.data.frame() %>%
+  bind_cols(., label = factor(mnist$label))
+
+ggplot(mnist_pca, aes(PC1, PC2, color = label)) + 
+  geom_point()
+```
+
+Algorytm *t-SNE* dla zbioru danych `mnist`:
+
+```{r}
+tsne = Rtsne(
+  mnist[ , -1]
+  , dims = 2 # na ile wymiarów chcemy rzutować nasze dane
+  , perplexity = 3
+  , verbose = TRUE
+  , pca = FALSE # czy wykonać PCA na początku
+  , max_iter = 500 # liczba iteracji algorytmu
+) 
+
+tsne_mnist = tsne$Y %>% 
+  as.data.frame() %>%
+  dplyr::rename(x = V1, y = V2) %>% 
+  bind_cols(., label = factor(mnist$label))
+
+ggplot(tsne_mnist, aes(x, y, color = label)) + 
+  geom_point()
+```
+
+## Grupowanie danych
+
+Pogrupowane dane, to takie gdzie jesteśmy w stanie wskazać grupy, dla których obserwacje wewnątrz grupy są bardziej podobne do siebie niż do obserwacji z innych grup. Zatem zamiast funkcji straty będziemy musieli zdefiniować jakąś miarę *podobieństwa* (lub zróżnicowania) obiektów.
+
+### Miary odległości
+
+Odległość między dwoma obserwacjami będziemy definiować jako sumę odległości po wspołrzędnych $1, \dots, d$:
+
+$$
+D(x_{i_1}, x_{i_2}) = \sum_{j=1}^d d_j(x_{i_1j}, x_{i_2j})
+$$
+
+natomiast odległość $d_j$ zależy od rodzaju zmiennej $X_j$:
+
+-   dla zmiennych ciągłych najczęściej będziemy przyjmować kwadrat odległości euklidesowej:
+
+    $$
+    d_j(x_{i_1j}, x_{i_2j}) = (x_{i_1j} - x_{i_2j})^2
+    $$
+
+-   dla zmiennych na skali porządkowej (z klasami $m = 1, \dots, M$) dokonamy transformację:
+
+    $$
+    \frac{m - 0.5}{M}
+    $$
+
+    a następnie będzie je traktować jako zmienne ciągłe
+
+-   dla zmiennych nominalnych z (z klasami $m = 1, \dots, M$) tworzymy symetryczną macierz wymiaru $M \times M$, t.że $L_{m_1 m_2} = 1$ dla $m_1 \neq m_2$ oraz $L_{m_1 m_2} = 0$ dla $m_1 = m_2$.
+
+### Funkcja mapująca
+
+W zbiorze danych $\mathcal{D}$ mamy $n$ obserwacji indeksowanych $i = 1, \dots, n$. Szukamy odwzorowanie
+
+$$
+C: \lbrace {1, \dots, n} \rbrace \rightarrow \lbrace 1, \dots, K \rbrace
+$$
+
+($K < n$), takie, że każda obserwacja należy do dokładnie jednego podzbioru $C_k$:
+
+-   $C_1 \cup C_2 \cup \dots \cup C_K = \lbrace 1, \dots n \rbrace$
+
+-   $C_k \cap C_j = \emptyset$ dla $k \neq j$.
+
+Zróżnicowanie obserwacji wewnątrz grup powinno być jak najmniejsze, natomiast zróżnicowanie obserwcji pomiędzy grupami powinno być jak największe. Musimy zatem zdefiniować funkcję straty, która będzie mierzyć to zróżnicowanie. Zacznijmy od całkowitego zróżnicowania, które jest stałe dla danego zbioru danych $\mathcal{D}$ oraz niezależne od funkcji $C$:
+
+$$
+T = \frac{1}{2} \sum_{i_1=1}^n \sum_{i_2=1}^n D(x_{i_1}, x_{i_2}) = \\
+= \frac{1}{2} \sum_{k=1}^K \sum_{C(i_1) = k} \left( \sum_{C(i_2) = k} D(x_{i_1}, x_{i_2}) + \sum_{C(i_2) \neq k} D(x_{i_1}, x_{i_2})  \right) = \\
+= W(C) + B(C)
+$$
+
+Mamy zatem dwie miary zależne od funkcji mapującej $C$:
+
+-   zróżnicowanie wewnątrzgrupowe (*within cluster variation*):
+
+    $$
+    W(C) = \frac{1}{2} \sum_{k=1}^K \sum_{C(i_1)=k} \sum_{C(i_2)=k} D(x_{i_1}, x_{i_2})
+    $$
+
+-   zróżnicowanie międzygrupowe (*beetwen cluster variation*):
+
+    $$
+    B(C) = \frac{1}{2} \sum_{k=1}^K \sum_{C(i_1)=k} \sum_{C(i_2)\neq k} D(x_{i_1}, x_{i_2})
+    $$
+
+Będziemy zatem minimalizaować funkcję straty $W(C)$ (lub równoważnie maksymalizować funkcję $B(C)$).
+
+### Grupowanie wokół średnich
+
+Zakładamy, że wszystkie zmienne $X_1, \dots , X_d$ są ciągłe. Wówczas jako odległość przyjmiemy normę Euklidesową z kwadratem:
+
+$$
+D(x_{i_1}, x_{i_2}) = \sum_{j=1}^d (x_{i_1j} - x_{i_2j})^2 = ||x_{i_1}  - x_{i_2} ||^2
+$$
+
+Wówczas zróżnicowanie wewnątrzgrupowe dane jest wzorem:
+
+$$
+W(C) = \frac{1}{2} \sum_{k=1}^K \sum_{C(i_1)=k} \sum_{C(i_2)=k} ||x_{i_1} - x_{i_2}||^2 = \\
+= \sum_{k=1}^K N_k \sum_{C(i) = k} ||x_{i} - m_k ||^2 
+$$
+
+gdzie:
+
+-   $m_k = (m_{1k}, \dots, m_{dk})$ jest wektorem średnich wartości zmiennych $X_1, \dots, X_d$ dla obserwacji nalezących do grupy $k$
+
+-   $N_k = \sum_{i=1}^n I(C(i) = k)$ jest funkcją wskaźnikową przynależności obserwacji do grupy $k$.
+
+Algorytm grupowania wokół średnich działa następująco:
+
+1.  Każdej obserwacji $1, \dots, n$ przypisujemy grupę $1, \dots, k$ w sposób losowy.
+2.  Liczymy wektory średnich $m_1, \dots, m_K$.
+3.  Przypisujemy każdą obserwację $1, \dots, n$ do grupy będącej najbliżej według odległości do średniej $m_1, \dots, m_K$.
+4.  Powtarzamy kroki 2-3 aż $m_1, \dots, m_K$ przestaną się zmieniać lub nastąpi inne kryterium zatrzymania (np. maksymalna ilość iteracji algorytmu).
+
+W każdej kolejnej iteracji $W(C)$ będzie mniejsze lub równe względem poprzedniej iteracji. Algorytm ten jednak zbiega do lokalnego minimum, które jest zależne od losowego przypisania w kroku 1. W praktyce powtarzamy algorytm wielokrotnie $b = 1, \dots, B$ i jako finalne rozwiązanie $C^*$ wybieramy $b$ t.że $W(C)$ jest najmniejsze.
+
+### Implementacja w `R`
+
+```{r}
+data(mtcars)
+
+set.seed(213) 
+
+model_kmeans = kmeans(
+  mtcars %>% scale()
+  , centers = 2
+  , iter.max = 100
+  , nstart = 100
+)
+
+fviz_cluster(model_kmeans, data = mtcars, axes = c(1,2))
+```
+
+### Wybór optymalnej ilości $k$
+
+Jedną z najprostszych metod wyboru optymalnej ilości grup jest tzw. metoda łokcia (ang. *elbow method*). Polega ona na wyborze ilości grup $k$ takiej, że $W(C)$ zaczyna coraz wolniej maleć.
+
+```{r}
+set.seed(213)
+kmeans_elbow = map_dbl(
+  1:10
+  , ~ kmeans(
+    mtcars %>% scale()
+    , centers = .x
+    , nstart = 100
+  )$tot.withinss
+)
+
+tibble(
+  k = as.factor(1:10)
+  , W_c = kmeans_elbow
+) %>%
+  ggplot(aes(k, W_c, group = 1)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = 4, linetype = 'dashed')
+```
+
+Inną metodą jest reguła Silhouette. Polega ona na obliczeniu dla każdej obserwacji wartości *silhouette width*, która jest definiowana jako:
+
+$$ s(i) = \frac{b(i) - a(i)}{\max(a(i), b(i))} = 
+\begin{cases}
+1 - \frac{a(i)}{b(i)} \quad \text{gdy} \ a(i) < b(i) \\
+\frac{b(i)}{a(i)} - 1 \quad \text{gdy} \ a(i) > b(i) \\
+0 \quad \quad \quad \ \ \ \text{gdy} \ a(i) = b(i)
+\end{cases}
+$$
+
+gdzie:
+
+-   $a(i)$ - średnia odległość między obserwacją $x_i$ a innymi obserwacjami w tej samej grupie
+
+    $$
+    a(i) = \frac{1}{|C_k| - 1} \sum_{x_j \in C_k} d(x_i, x_j)
+    $$
+
+-   $b(i)$ - minimalna średnia odległość między obserwacją $x_i$ a obserwacjami z innych grup:
+
+    $$
+    b(i) = \min_{l \neq k} \frac{1}{\left| C_l \right|} \sum_{x_j \in C_l} d(x_i, x_j)
+    $$
+
+Wartość $s(i)$ przyjmuje wartości z przedziału $[-1, 1]$. Wartości bliskie $1$ oznaczają, że obserwacja jest dobrze przypisana do grupy, wartości bliskie $-1$ oznaczają, że obserwacja jest źle przypisana do grupy, a wartości bliskie $0$ oznaczają, że obserwacja jest na granicy między grupami. Optymalna ilość grup to taka, dla której suma po wszystkich obserwacjach wartości *silhouette width* jest największa.
+
+```{r}
+set.seed(213)
+silhouette_width = map_dbl(2:10, function(k) {
+  km_res = kmeans(mtcars %>% scale(), centers = k)
+  distance = dist(mtcars %>% scale())
+  sil_widths = silhouette(km_res$cluster, distance)
+  mean(sil_widths[, 'sil_width'])
+})
+
+tibble(
+  k = as.factor(2:10)
+  , silhouette = silhouette_width
+) %>%
+  ggplot(aes(k, silhouette, group = 1)) +
+  geom_line() +
+  geom_point() +
+  geom_vline(xintercept = 2, linetype = 'dashed')
+
+```
+
+Wizualizacja $s(i)$:
+
+```{r}
+distance = dist(mtcars %>% scale())
+si = silhouette(model_kmeans$cluster, distance)
+fviz_silhouette(si)
+```
+
+## Zadania
+
+1.  Wykonaj PCA na zbiorze `iris`. Zwizualizuj rzut danych na najważniejsze składowe główne w 2D oraz 3D.
+2.  Znajdź optymalną ilość grup algorytmu `kmeans` dla zbioru danych `USArrests`.
+3.  Zwizualizuj `kmeans` z dwoma grupami dla zbioru danych `datasets\\k_means_example.csv`. Wykonaj to samo, ale na ustandaryzowanych danych. Jaka jest różnica?
+4.  Zbadaj jak będzie zmieniał się wynik algorytmu `t-SNE` na danych `mtcars` dla różnych wartości parametru `perplexity`.
+5.  Zwizualizuj zbiór danych `mnist` dla algorytmu `t-sne` z parametrem `perplexity` między 5 a 50 (można wziąć podzbiór danych dla przyspieszenia obliczeń).
+
+## Literatura
+
+-   ITSL - rozdział 9
+
+-   ESL - rozdział 14
+
+-   [Przykłady algorytmu *t-SNE*](https://distill.pub/2016/misread-tsne/)

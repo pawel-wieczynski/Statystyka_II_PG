@@ -1,0 +1,90 @@
+---
+title: "Metody bootstrapowe"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Wstęp
+
+Bootstrap jest metodą nieparametryczną (brak założeń co do rozkładów), która pomaga wyrazić niepewność/zmienność w sposób ilościowy.
+
+Dysponujemy $n$-elementową próbą losową (tzn. konkretnymi realizacjami powyższych zmiennych losowych):
+
+$$ \mathcal{D} = \lbrace (\mathbf{x}_1, y_1), \dots, (\mathbf{x}_n, y_n) \rbrace $$
+
+Na podstawie tej próby szacujemy pewien parametr $\hat{\theta}$. Aby zastosować procedurę bootstrap wykonujemy następujące kroki:
+
+1.  Ze zbioru $\mathcal{D}$ losujemy **ze zwracaniem** $n$-elementową próbkę $Z^{*b}$
+2.  Na podstawie wylosowanej próbki liczymy statystykę $\theta^{*b}$
+3.  Kroki 1-2 powtarzamy $B$ razy
+
+Możemy teraz policzyć dowolną statystykę rozkładu $\hat{\theta}$, np. jej zmienność:
+
+$$
+\sigma^2 \left( \hat{\theta} \right) = \frac{1}{B-1} \sum_{b=1}^B \left( \theta^{*b} - \bar{\theta^*} \right)^2
+$$
+
+## Zastosowanie w uczeniu maszynowym
+
+W kontekście wcześniejszych rozważań możemy wykorzystać metody bootstrapowe do oszacowania błędu generalizacji $\text{Err}$. Na każdej próbce $b=1,\dots , B$ dopasowujemy model $\hat{f^{*b}}$, następnie szacujemy średni błąd generalizacji:
+
+$$
+\widehat{\text{Err}}_B = \frac{1}{B} \sum_{b=1}^B \frac{1}{n} \sum_{i=1}^n L \left( y_i, \hat{f^{*b}} \left(x_i \right) \right)
+$$
+
+Nie jest to jednak do końca poprawne. Powyższy błąd generalizacji będzie niedoszacowany. Przypomnijmy sobie, że w metodzie walidacji krzyżowej podzbiór do trenowania modelu $\hat{f}$ był odseparowany od podzbioru do szacowania błędu $\text{Err}$. W powyższym przykładzie oba zbiory zawierają część wspólną.
+
+Oznaczmy przez $C^i \subset \lbrace 1, \dots ,B \rbrace$ zbiór indeksów próbek $Z^{*1} , \dots, Z^{*B}$ niezawierających $i$-tej obserwacji. Wówczas możemy oszacować średni błąd generalizacji:
+
+$$
+\widehat{\text{Err}}_B = \frac{1}{|C^i|} \sum_{b \in C^i} \frac{1}{n} \sum_{i=1}^n L \left( y_i, \hat{f^{*b}} \left(x_i \right) \right)
+$$
+
+Nadal nie jest to jednak poprawne. Tym razem błąd generalizacji jest przeszacowany.
+
+## Reguła .632
+
+Każda próbka bootstrapowa $Z^{*b}$ zawiera około $63.2\%$ różnych obserwacji ze zbioru $\mathcal{D}$. Otóż losując $n$ elementów ze zwracaniem, prawdopodobieństwo wylosowania elementu $x_i$ w dowolnym losowaniu wynosi $1/n$ (zatem prawdopodobieństwo niewylosowania wynosi $1 - 1/n$. Losowania są niezależne, zatem prawdopodobieństwo niepojawienia się elementu $x_i$ w próbce $Z^{*b}$ wynosi:
+
+$$
+\mathbb{P} \left( x_i \notin Z^{*b} \right) = \left( 1 - \frac{1}{n} \right)^n \xrightarrow{{n \to \infty} } \frac{1}{e} \simeq 0.368
+$$
+
+W praktyce często do oszacowania błędu generalizacji $\text{Err}$ wykorzystujemy średnią ważoną niedoszacowanego błędu treningoweo $\text{err}$ oraz przeszacowanego błędu bootstrapowego:
+
+$$
+\widehat{\text{Err}} = 0.368 \times \text{err} + 0.632 \times \widehat{\text{Err}}_B 
+$$
+
+## Zadania
+
+1.  Policz bootstrapowe przedzialy ufności dla średniej oraz dla odchylenia standardowego zmiennej `fnlwgt` ze zbioru danych `income.csv`. Porównaj je z przedziałami ufności obliczonymi *tradycyjnymi* metodami.
+2.  Zbadaj jak ilość próbek bootstrapowych $B$ wpływa na stabilność oraz szerokość przedziałów ufności.
+3.  Zbadaj jak ilość próbek bootstrapowych $B$ wpływa na obciążenie estymatora.
+
+```{r}
+set.seed(213)
+probka = rlnorm(100, meanlog = 0, sdlog = 1)
+
+# Policz bootstrapowy estymator średniej oraz mediany
+
+# Porównaj z teoretyczną średnią oraz medianą
+
+# Porównaj ze średnią oraz medianą wyznaczonymi z próby w sposób tradycyjny
+```
+
+## Literatura
+
+-   ESL - rozdział 7.11
+
+-   ITSL - ciekawy przykład w rozdziale 5.2
+
+-   Dyskusja o regule .632 <https://stats.stackexchange.com/questions/96739/what-is-the-632-rule-in-bootstrapping>

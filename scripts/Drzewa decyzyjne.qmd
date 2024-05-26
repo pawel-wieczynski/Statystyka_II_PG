@@ -1,0 +1,1106 @@
+---
+title: "Drzewa decyzyjne"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, plotly, caret, tree, ipred, randomForest, adabag, gbm, xgboost, vip, pdp, rpart, rpart.plot)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Zarys problemu
+
+Poniższy zbiór danych zawiera $n=200$ obserwacji oraz następujące zmienne:
+
+-   $X_1$ (*Years*) - ile lat dany zawodnik gra w baseball
+
+-   $X_2$ (*Hits*) - średnia ilość zdobytych punktów danego gracza w ostatnim sezonie
+
+-   $Y$ (*Salary*) - zarobki gracza w ostatnim sezonie
+
+```{r}
+df = read.csv('datasets\\baseball.csv')
+ggplot(df, aes(
+  x = Years
+  , y = Hits
+  , color = Salary
+)) +
+  geom_point(size = 2) +
+  scale_color_gradient(low = 'blue', high = 'red')
+```
+
+Dopasujmy model regresji liniowej.
+
+```{r}
+model_1 = lm(Salary ~ Years + Hits, data = df)
+summary(model_1)
+```
+
+Mamy dosyć niski współczynnik determinancji $R^2$ wynoszący zaledwie $53.23\%$. Wynika to z nieliniowości występującej w zbiorze danych. Otóż zawodnicy, którzy grają co najmniej 5 lat mogą liczyć na wysokie zarobki, pod warunkiem, że zdobywają dużo punktów. Zobaczmy jak ten zbiór danych wygląda w trzech wymiarach:
+
+```{r}
+data3d_lin = expand.grid(
+  Years = seq(0, 10, by = 0.1)
+  , Hits = seq(0, 30, by = 0.1)
+) %>%
+  bind_cols(., Salary = predict(model_1, .)) %>%
+  mutate(col = 'Predicted') %>%
+  bind_rows(., df %>% mutate(col = 'Real'))
+
+plot_ly(
+  data = data3d_lin
+  , x = ~Years
+  , y = ~Hits
+  , z = ~Salary
+  , color = ~col
+  , size = 4
+  , colors = c('#1f77b4', '#ff7f0e')
+)
+```
+
+## Drzewa decyzyjne
+
+W tej metodzie podzielimy przestrzeń zmiennych objaśniających $X = (X_1, X_2) \in \mathbb{R}^2$ na prostokąty (lub ich odpowiedniki w wyższych wymiarach) i w każdym z nich dopasujemy osobny model $\hat{f}(X)$.
+
+Dzielimy przestrzeń na $m$ prostokątów $R_1, \dots , R_m$ i w każdym z nich dopasowujemy stałą funkcję $\hat{f}_m (X) = c_m$, tzn.
+
+$$
+\hat{f}(X) = \sum_{i=1}^m c_m \mathbf{1}_{\lbrace X \in R_m \rbrace }
+$$
+
+### Drzewa regresyjne
+
+Jeśli jako funkcję straty przyjmiemy błąd kwadratowy
+
+$$
+L(\hat{f}) = \sum_{i=1}^n \left( y_i - \hat{f}(x_i) \right)^2 \longrightarrow \min
+$$
+
+to funkcją minimalizującą ten błąd jest średnia wartość zmiennej $Y$ obserwacji zbioru treningowego $\mathcal{D}$ należących do obszaru $R_m$
+
+$$
+\hat{c}_m = \frac{1}{n} \sum_{i=1}^n y_i \mathbf{1}_{\lbrace x_i \in R_m \rbrace }
+$$
+
+Jak zatem podzielić przestrzeń $X$ na $m$ prostokątów? W pierwszym kroku wybieramy zmienną $X_j$, $j = 1, \dots, d$ oraz punkt podziału $s$, tak aby zminimalizować funkcję straty
+
+$$
+\min_{j,s} \left[ \min_{c_1} \sum_{x_i \in R_1(j,s)} \left( y_i - c_1 \right)^2 + \min_{c_2} \sum_{x_i \in R_2(j,s)} \left( y_i - c_2 \right)^2   \right]
+$$
+
+![](images/cart.gif){fig-align="center"}
+
+Wówczas otrzymamy $2$ rozłączne prostokąty
+
+$$
+R_1(j, s) = \lbrace X \ | \ X_j \leq s \rbrace \\
+R_2(j, s) = \lbrace X \ | \ X_j > s \rbrace
+$$
+
+oraz średnie wartości zmiennej $y$ w tych obszarach, czyli $\hat{c}_1, \hat{c}_2$. W każdym z tych prostokątów możemy niezależnie powtórzyć powyższą procedurę i otrzymamy $m=4$ obszarów. Możemy też powtórzyć tę procedurę tylko w jednym z obszarów $R_1, R_2$, a otrzymamy $m=3$. Generalnie, musimy zdefiniować jakieś kryterium zatrzymania, kiedy zatrzymać ten algorytm.
+
+Powyższy algorytm jest zaimplementowany w funkcji `tree()` z biblioteki `tree`. Często używaną biblioteką jest też `rpart`.
+
+```{r}
+model_2 = tree(Salary ~ Years + Hits, data = df)
+model_2
+```
+
+Wizualizacja dopasowanego modelu:
+
+```{r}
+plot(model_2)
+text(model_2)
+```
+
+```{r}
+ggplot(df, aes(
+  x = Years
+  , y = Hits
+  , color = Salary
+)) +
+  geom_point(size = 2) +
+  scale_color_gradient(low = 'blue', high = 'red') +
+  geom_vline(xintercept = 4.994818) +
+  geom_segment(
+    x = 4.994818
+    , y = 19.80246
+    , xend = 11
+    , yend = 19.80246
+    , color = 'black'
+  ) +
+  geom_label(
+    x = 2.5
+    , y = 15
+    , label = 5004.361
+    , size = 5
+    , color = 'black'
+  ) +
+  geom_label(
+    x = 7.5
+    , y = 10
+    , label = 5958.047
+    , size = 5
+    , color = 'black'
+  ) +
+  geom_label(
+    x = 7.5
+    , y = 25
+    , label = 10085.784
+    , size = 5
+    , color = 'black'
+  )
+```
+
+```{r}
+data3d_lin = expand.grid(
+  Years = seq(0, 10, by = 0.1)
+  , Hits = seq(0, 30, by = 0.1)
+) %>%
+  bind_cols(., Salary = predict(model_2, .)) %>%
+  mutate(col = 'Predicted') %>%
+  bind_rows(., df %>% mutate(col = 'Real'))
+
+plot_ly(
+  data = data3d_lin
+  , x = ~Years
+  , y = ~Hits
+  , z = ~Salary
+  , color = ~col
+  , size = 4
+  , colors = c('#1f77b4', '#ff7f0e')
+)
+```
+
+```{r}
+y_hat = predict(model_2, newdata = df)
+cor(y_hat, df$Salary)^2
+```
+
+### Przycinanie drzew
+
+Duże drzewo, tzn. takie z dużą ilością węzłów końcowych może prowadzić do przetrenowania modelu (małe obciążenie na zbiorze treningowym, duża wariancja). Z kolei małe drzewo może nie mieć żadnej mocy prognostycznej. Rozmiar drzewa jest zatem hiperparametrem, który powinnismy zoptymalizować.
+
+Oznaczmy $T_0$ drzewo decyzyjne budowane aż do osiągnięcia kryterium zatrzymania, np. minimalna ilość obserwacji w każdym z obszarów $R_m$.
+
+Oznaczmy rozmiar drzewa $T$ przez $|T|$ (ang. *tree complexity*), czyli ilość prostokątów $R_m$ w danym drzewie. Dla ustalonego drzewa $T$ defniujemy kryterium zwane *cost-complexity criterion*, czyli po prostu kwadratową funkcję straty z pewną penalizacją za zbyt duży rozmiar drzewa (analogicznie do regularyzacji w regresji liniowej):
+
+$$
+C_\alpha (T) = \sum_{m=1}^{|T|} \sum_{x_i \in R_m} \left( y_i - \hat{c}_m \right)^2  + \alpha \ |T| \longrightarrow \min
+$$
+
+Parametr $\alpha$ nazwamy *complexity parameter*. Dla każdego $\alpha \geq 0$ istnieje drzewo $T_\alpha \subset T_0$ wyznaczone w sposób jednoznaczny, takie że $C_\alpha (T)$ osiąga minimum. Optymalny parametr $\hat{\alpha}$ (tzn. minimalizujący błąd generalizacji) możemy wyznaczyć przy pomocy walidacji krzyżowej. Proces ten nazywamy przycinaniem drzewa (ang. *tree pruning*).
+
+```{r}
+# prune.tree(model_2)
+```
+
+Gdy $\alpha = 0$, to mamy pełne drzewo $T_0$. Gdy $\alpha \to \infty$, to $|T| \to 1$.
+
+### Drzewa klasyfikacyjne
+
+W przypadku klasyfikacji zmieni się jedynie funkcja straty. Oznaczmy $\hat{p}_m$ ilość obserwacji w obszarze $R_m$ należących do klasy $1$:
+
+$$
+\hat{p}_m = \frac{1}{|R_m|} \sum_{x_i \in R_m} \mathbf{1}_{\lbrace y_i = 1 \rbrace}
+$$
+
+Najczęściej używane funkcje straty to:
+
+-   entropia krzyżowa (ang. *cross-entropy* lub *deviance*):
+
+    $$
+    L(\hat{p}_m) =- \hat{p}_m \ln \hat{p}_m - (1 - \hat{p}_m) \ln (1 - \hat{p}_m)
+    $$
+
+-   współczynnik Giniego:
+
+    $$
+    L(\hat{p}_m) = 2 \hat{p}_m (1- \hat{p}_m)
+    $$
+
+-   błąd klasyfikacji (ang. *misclassification error*)
+
+    $$
+    L(\hat{p}_m) = 1 - \max(\hat{p}_m, 1 - \hat{p}_m)
+    $$
+
+```{r}
+error_deviance = function(p) -p * log(p) - (1 - p) * log(1 - p)
+error_gini = function(p) 2 * p * (1 - p)
+error_misclass = function(p) 1 - max(p, 1 - p)
+
+
+errors_df = tibble(
+  p = seq(0, 1, by = 0.001)
+) %>%
+  rowwise() %>%
+  mutate(
+    Deviance = error_deviance(p)
+    , Gini = error_gini(p)
+    , Misclass = error_misclass(p)
+  ) %>%
+  pivot_longer(
+    cols = 2:4
+    , names_to = 'Error'
+    , values_to = 'Value'
+  )
+
+ggplot(errors_df, aes(x = p, y = Value)) +
+  geom_point(aes(color = Error), size = 1)
+```
+
+Na wykresach możemy zauważyć, że entropia krzyżowa oraz współczynnik Giniego są różniczkowalne. Z tego też powodu są one zazwyczaj używane do budowy drzew klasyfikacyjnych (zarówno w bibliotece `tree` jak i `rpart` możemy wybrać obie funkcje straty). Błąd klasyfikacji jest natomiast często używany podczas przycinania drzewa (zobacz dokumentację funkcji `prune.tree`).
+
+```{r}
+df = read.csv('datasets\\winequality-red.csv')
+df = df %>% mutate(quality_bin = if_else(quality > 5, 1, 0) %>% as.factor())
+
+set.seed(213)
+train_indices = sample(
+  1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+# Budujemy model T_0 minimalizując entropię krzyżową
+model_3 = tree(
+  quality_bin ~.-quality
+  , data = df_train
+  , split = 'deviance'
+)
+
+plot(model_3)
+text(model_3)
+
+model_4 = tree(
+  quality_bin ~.-quality
+  , data = df_train
+  , split = 'gini'
+)
+
+plot(model_4)
+text(model_4)
+
+# Metodą walidacji krzyżowej szukamy optymalne przycięcie drzewa
+cross_val = cv.tree(
+  model_3
+  , FUN = prune.tree
+  , method = 'misclass'
+  , K = 5
+)
+
+cross_val
+plot(cross_val)
+
+# Optymalny model
+k_hat = cross_val$k[which.min(cross_val$dev)]
+model_4 = prune.tree(
+  model_3
+  , k = k_hat
+  , method = 'misclass'
+)
+
+plot(model_4)
+text(model_4)
+
+# Prognoza na zbiorze testowym
+y_hat_prob = predict(model_4, newdata = df_test)
+y_hat = ifelse(y_hat_prob[, 2] > 0.5, 1, 0) %>% as.factor()
+levels(y_hat) == levels(df_test$quality_bin)
+
+confusionMatrix(y_hat, df_test$quality_bin)
+```
+
+### Biblioteka `caret`
+
+Biblioteka `caret` (ang. *Classification And REgression Training*) posiada dużo funkcji znacznie ułatwiających budowanie modeli statystycznych. Za pomocą funkcji `train` możemy oszacować błąd generalizacji (metodami bootstrapowymi lub metodą walidacji krzyżowej) dla wielu algorytmów uczenia maszynowego. Lista dostępnych algorytmów: <https://topepo.github.io/caret/train-models-by-tag.html>
+
+```{r}
+model_5 = train(
+  quality_bin ~ .-quality
+  , data = df_train
+  , method = 'rpart'
+  , tuneLength = 50
+  , trControl = trainControl(method = 'cv', number = 5)
+)
+
+ggplot(model_5)
+varImp(model_5)
+vip(model_5, geom = 'point')
+pdp::partial(model_5$finalModel, 'density') %>% autoplot()
+```
+
+## Bagging
+
+```{r}
+df = read.csv('datasets\\kc_house_data.csv') %>%
+  select(-id, -date)
+```
+
+Do tej pory często korzystaliśmy z metod bootstrapowych, aby oszacować precyzję danego estymatora. Metody bootstrapowe możemy również wykorzystać do poprawienia samego estymatora. W tym wypadku naszym estymatorem jest model $\hat{f}(X)$, który przybliża zmienna losową $Y$. *Bagging* lub *bootstrap averaging* pomoże nam zmniejszyć wariancję naszego modelu, a tym samym obniżyć wartość funkcji straty.
+
+Mamy zbiór danych $\mathcal{D} = \lbrace (x_1, y_1), \dots , (x_n, y_n) \rbrace$. Losujemy $B$ próbek bootrapowych, na każdej z nich dopasowujemy model $\hat{f^{*1}}, \dots \hat{f^{*B}}$. Wówczas finalna prognoza modelu będzie średnią prognozą ze wszystkich modeli bootstrapowych:
+
+$$
+\hat{f}_{bag} = \frac{1}{B} \sum_{b=1}^B \hat{f^{*b}} (x)
+$$
+
+Każdy z dopasowanych modeli ma taki są rozkład prawdopodobieństwa, zatem wartość oczekiwana wszystkich modeli jest równa wartości oczekiwanej pojedynczego drzewa:
+
+$$
+\mathbb{E}\left[ \hat{f} (X) \right] = \mathbb{E}\left[ \hat{f^{*b}} (X) \right] \quad \forall \ {b \in \lbrace 1, \dots B \rbrace}
+$$
+
+Mimo iż drzewa te możemy budować równolegle, to nie są one niezależne. Oznaczmy korelację miedzy modelami:
+
+$$
+\text{Cor} \left( \hat{f^{*b_i}}, \hat{f^{*b_j}} \right) = \rho
+$$
+
+Wówczas wariancja modelu $\hat{f}_{bag}$ wynosi:
+
+$$
+\mathbb{V} \left( \hat{f}_{bag} (X) \right) = \rho \sigma^2_\epsilon + \frac{1-\rho}{B} \sigma^2_\epsilon
+$$
+
+Zatem jeśli będziemy zwiększać $B$, to uda nam się obniżyć wariancję modelu, co przy stałym obciążeniu doprowadzi równiez do obniżenia błędu MSE.
+
+Jak wcześniej zauważyliśmy, drzewo decyzyjne cechuje się dużą wariancją. Istotnie, na poniższych diagramach widzimy, że każdy przykładowych modeli $\hat{f^{*b}}$ dla $b = 1, \dots 10$ ma zupełnie inną topologię.
+
+```{r}
+set.seed(213)
+for(b in 1:10) {
+  
+  sample_indices = sample(
+    1:nrow(df)
+    , size = nrow(df)
+    , replace = TRUE
+  )
+  
+  df_sample = df[sample_indices, ]
+  # col_sample = sample(2:19, size = 5)
+  # df_sample = df[sample_indices, c(1, col_sample)]
+  
+  model_boot = tree(price ~ ., data = df_sample)
+  
+  plot(model_boot)
+  text(model_boot)
+  
+}
+```
+
+Zobaczmy w praktyce, jak zmienia się błąd generalizacji jako funkcja $B$.
+
+```{r}
+# Dzielimy zbiór danych na zbiór treningowy oraz testowy
+set.seed(213)
+train_indices = sample(
+  x = 1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+# Inicjalizujemy obiekty do przechowywania wyników
+predictions_df = matrix(
+  NA
+  , nrow = nrow(df_test)
+  , ncol = 100
+) %>% as.data.frame()
+
+error_df = data.frame(
+  B = 1:100
+  , Error = NA
+)
+
+for (b in 1:nrow(error_df)) {
+  
+  # Losujemy próbkę bootstrapową
+  sample_indices = sample(
+    1:nrow(df_train)
+    , size = nrow(df_train)
+    , replace = TRUE
+  )
+  
+  # Trenujemy model
+  df_sample = df_train[sample_indices, ]
+  model_boot = tree(price ~ ., data = df_sample)
+  
+  # Prognozujemy na zbiorze testowym
+  pred_boot = predict(model_boot, newdata = df_test)
+  predictions_df[, b] = pred_boot
+  
+  # Uśredniamy wynik przez wszystkie modele
+  f_bag = rowMeans(predictions_df, na.rm = TRUE)
+  
+  # Szacujemy błąd generalizacji
+  error_df$Error[b] = sqrt(mean((df_test$price - f_bag)^2))
+  
+  cat(b, '\n')
+}
+
+# Model bazowy czyli pojedyncze drzewo
+model_base = tree(price ~ ., data = df_train)
+predict_base = predict(model_base, newdata = df_test)
+error_base = sqrt(mean((df_test$price - predict_base)^2))
+
+ggplot(error_df, aes(x = B, y = Error)) +
+  geom_point() +
+  geom_line() +
+  geom_hline(
+    yintercept = error_base
+    , linetype = 'dashed'
+    , linewidth = 1.25
+    , color = '#F8766D'
+  )
+```
+
+Implementację *baggingu* możemy znaleźc w bibliotece `ipred`.
+
+```{r}
+model_ipred = ipred::bagging(
+  price ~ .
+  , data = df_train
+  , nbagg = 100
+)
+
+pred_ipred = predict(
+  model_ipred
+  , newdata = df_test
+)
+
+sqrt(mean((df_test$price - pred_ipred)^2))
+```
+
+### Lasy losowe
+
+W zwykłym *baggingu* wariancję modelu mogliśmy ograniczyć do $\rho \sigma^2_\epsilon$. Czy możemy ją jeszcze bardziej obniżyć? Spróbujmy obniżyć korelację między drzewami. Skąd ona wynika? Spójrzmy ponownie na przykładowe modele $\hat{f^{*b}}$. Na poszczególnych węzłach pojawiają się ciągle te same zmienne: *sqft_living*, *lat* oraz *grade*.
+
+**Lasy losowe** są szczególnym przypadkiem *baggingu* gdzie przy każdy podziale drzewa w sposób losowy wybieramy $m \leq d$ zmiennych objaśniających jako kandydatek do podziału.
+
+Implementację lasów losowychmożemy znaleźc w bibliotece `randomForest`. Dwa kluczowe parametry, które możemy zoptymalizować to `mtry` oraz `ntree`.
+
+```{r}
+cl = makeCluster(detectCores() - 1, type = 'PSOCK')
+registerDoParallel(cl)
+
+# runtime ~1min
+test = foreach(
+  i = seq(2, 16, by = 2)
+  , .packages = 'randomForest'
+  , .combine = cbind
+) %dopar% {
+  
+  model_rf = randomForest(
+    price ~.
+    , data = df_train
+    , mtry = i
+    , ntree = 100
+  )
+  
+  model_rf$mse
+  
+}
+
+stopCluster(cl)
+
+rmse_rf_df = test %>%
+  as.data.frame() %>%
+  mutate(ntree = 1:n(), .before = 1) %>%
+  pivot_longer(2:ncol(.), names_to = 'mtry', values_to = 'MSE') %>%
+  mutate(mtry = stringr::str_extract(mtry, '\\d+'), RMSE = sqrt(MSE))
+
+ggplot(rmse_rf_df, aes(x = ntree, y = RMSE, color = as.factor(mtry))) +
+  geom_line(size = 1) +
+  geom_hline(yintercept = error_base, linetype = 'dashed') +
+  labs(color = 'mtry') -> p1
+
+plotly::ggplotly(p1)
+
+# Oszacowanie bledu na zbiorze testowym
+pred_rf = predict(
+  model_rf
+  , newdata = df_test
+)
+
+sqrt(mean((df_test$price - pred_rf)^2))
+```
+
+### *Out-of-bag-error*
+
+Jak pamiętamy z lekcji wprowadzającej, każda próbka bootstrapowa zawiera około $63\%$ obserwacji ze zbioru treningowego. Zatem podczas *baggingu* każdym drzewie decyzyjnym mamy około $37\%$ obserwacji, które nie były użyte do wytrenowania modelu, możemy je zatem potraktować jako zbiór walidacyjny. Błąd oszacowany w ten sposób i uśredniony na wszystkich próbkach bootstrapowych nazywamy błędem *out-of-bag error*, w skrócie OOB. Przy dużej ilość $B$ błąd ten powinien zbiegać do błędu LOOCV. **Możemy zatem potraktować to jako wbudowaną walidację krzyżową w algorytm baggingu.**
+
+```{r}
+model_ipred = ipred::bagging(
+  price ~ .
+  , data = df_train
+  , nbagg = 20
+  , coob = TRUE
+  , control = rpart.control(maxdepth = 15)
+)
+
+model_ipred
+
+y_hat = predict(model_ipred, newdata = df_test)
+rmse_bagging = RMSE(pred = y_hat, obs = df_test$price)
+```
+
+### Istotność zmiennych
+
+W regresji liniowej lub regresji logistycznej możemy uporządkować zmienne objasniające według ich ważności na podstawie wartości *p-value* dla testu t-Studenta. Podobnie w drzewach decyzyjnych możemy ocenić które zmienne najbardziej a które najmniej przyczyniają się do minimalizacji funkcji straty.
+
+Na temat konkretnej implementacji dla lasów losowych możemy na przykład doczytać o tym w dokumentacji biblioteki `randomForest` : <https://cran.r-project.org/web/packages/randomForest/randomForest.pdf>
+
+```{r}
+varImp(model_ipred)
+varImp(model_rf)
+
+importance(model_rf)
+varImpPlot(model_rf)
+
+pdp::partial(model_rf, 'lat') %>% autoplot()
+```
+
+Lasy losowe, podobnie jak regresja lasso, mogą być użyte do wstępnej selekcji zmiennych objaśniających.
+
+## Boosting
+
+W *baggingu* budowaliśmy ciąg niezależnych modeli $\hat{f}_i$, aby zmniejszyć wariancję modelu $\hat{f}$ poprzez uśrednienie prognoz, a tym samym zmniejszyć błąd średniokwadratowy. Jak pamiętamy, oprócz wariancji drugim składnikiem błędy średniokwadratowego jest obciążenie. Jeśli model $\hat{f}_1$ ma duże obciążenie, to na obciążonych obserwacjach możemy oszacować model $\hat{f}_2$, i tak dalej... Na tym mniej więcej polega *boosting* - budujemy ciąg modeli $\hat{f}_i$ w sposób sekwencyjny, aby zmniejszyć obciążenie finalnego modelu $\hat{f}$.
+
+Zdefiniujmy rozwinięcie funkcji bazowych (ang. *basis function expansions*):
+
+$$
+\hat{y} = f(x) = \sum_{m=1}^M \beta_m f_m (x; \gamma_m)
+$$
+
+gdzie $\beta_m$ jest współczynnikiem ekspansji funkcji bazowej $f_m$ zależnej od parametru $\gamma_m$. Zauważmy, że funkcja $f(x)$ jest zdefiniowa w sposób rekurencyjny przez sumy cząstkowe powyższego szeregu, tzn. w $m$-tym kroku mamy:
+
+$$
+\hat{y}^{(m)}(x) = \sum_{j=1}^{m} \beta_j f_j (x; \gamma_j) = \hat{y}^{(m-1)}(x) + f_m(x, \gamma_m)
+$$
+
+Szukamy zatem wspołczynników $\beta_m, \gamma_m$, aby zminimalizować funkcję straty:
+
+$$
+\sum_{i=1}^n L \left( y_i, \sum_{m=1}^M \beta_m f_m (x_i; \gamma_m)  \right) \longrightarrow \min
+$$
+
+co sprowadza się do sekwencyjnego minimalizowania funkcji straty w każdej iteracji $m=1,\dots M$, czyli:
+
+$$
+\sum_{i=1}^n L \left( y_i, \hat{y}^{(m-1)} (x_i) + \beta_m f_m(x_i ; \gamma_m) \right) \longrightarrow \min
+$$
+
+W problemach regresji, gdy przyjmiemy kwadratową funkcję straty, to mamy:
+
+$$
+\sum_{i=1}^n \left( y_i - \hat{y}^{(m-1)} (x_i) - \beta_m f_m(x_i ; \gamma_m) \right)^2 = \sum_{i=1}^n \left( r_{im} - \beta_m f_m(x_i ; \gamma_m ) \right)^2
+$$
+
+gdzie $r_{.m}$ są resztami z modelu $\hat{y}^{(m-1)}$. Czyli w sposób sekwencyjny dopasowujemy nowy model na resztach poprzedniego modelu.
+
+### Algorytm AdaBoost
+
+Odpowiednikiem reszt modelu w zagadnieniach regresji jest tzw. *classification margin* w zagadnieniach klasyfikacji binarnej gdzie $Y \in \lbrace -1, 1 \rbrace$, który definiujemy jako $y \ f(x)$.
+
+Można pokazać, że
+
+$$
+\hat{f}(x) = \arg\min_{f(x)} = \mathbb{E} \left[ e^{-Yf(x)} \ | X = x \right] = \frac{1}{2} \ln \frac{\mathbb{P}( Y = 1 \ | X = x)}{\mathbb{P}( Y = -1 \ | X = x)}
+$$
+
+czyli logarytm szans w klasyfikacji binarnej możemy przybliżyć za pomocą funkcji straty danej wzorem:
+
+$$
+L(y, f(x) ) = e^{-y f(x)} \longrightarrow \min
+$$
+
+Oznacza to, że błędnie zaklasyfikowane obserwacje otrzymują większą wagę podczas liczenia funkcji straty:
+
+|          |   $\hat{f}(x) = 1$    |   $\hat{f}(x) = -1$   |
+|:--------:|:---------------------:|:---------------------:|
+| $Y = 1$  | $e^{-1} \simeq 0.368$ | $e^{1} \simeq 2.718$  |
+| $Y = -1$ | $e^{1} \simeq 2.718$  | $e^{-1} \simeq 0.368$ |
+
+Jako pień drzewa (ang. *stump*) z definiujmy drzewo decyzyjne z tylko dwoma obszarami $R_1$ oraz $R_2$. Takie drzewo ma zazwyczaj duże obciążenie. W algorytmie *AdaBoost* budujemy sekwencyjnie pnie. Każdy pień otrzymuje wagę:
+
+$$
+\beta_m = \frac{1}{2}\ln \frac{1 - \text{err}_m}{\text{err}_m}
+$$
+
+gdzie $\text{err}_m$ jest ważonym błędem klasyfikacji
+
+$$
+\text{err}_m = \frac{\sum_{i=1}^n w_i^{(m)} \mathbf{1}_{\lbrace y_i \neq f_m(x_i) \rbrace}}{\sum_{i=1}^n w_i^{(m)}}
+$$
+
+```{r}
+stump_weight = function(err) 0.5 * log((1 - err) / err)
+
+stump_weight_df = tibble(
+  error = seq(0, 1, by = 0.01)
+) %>%
+  mutate(Stump_Weight = stump_weight(err = error))
+
+ggplot(stump_weight_df, aes(x = error, y = Stump_Weight)) +
+  geom_line(size = 1)
+```
+
+W pierwszej iteracji wszystkie obserwacje mają równe wagi, natomiast w każdej kolejnej iteracji aktualizujemy wagi:
+
+$$
+w_i^{(m+1)} = w_i^{(m)} \exp( -y_i \beta_m f_m(x_i) )
+$$
+
+Pełne wyprowadzenie wzorów można znaleźć w ESL 10.4.
+
+```{r}
+obs_weight = function(y, beta) exp(-y * beta)
+
+obs_weight_df = tibble(
+  beta = rep(seq(0, 4, length.out = 100), 2)
+  , y = c(rep(1, 100), rep(-1, 100))
+) %>%
+  mutate(Weight = obs_weight(y, beta))
+
+ggplot(obs_weight_df, aes(x = beta, y = Weight)) +
+  geom_line(aes(color = as.factor(y)), size = 1) +
+  facet_wrap(vars(as.factor(y)), scales = 'free') +
+  theme(legend.position = 'none')
+```
+
+```{r}
+df = read.csv('datasets\\winequality-red_sample.csv')
+df = df %>% 
+  mutate(quality_bin = if_else(
+    quality > 5, 1, 0) %>% as.factor()
+  ) %>%
+  mutate(obs = 1:nrow(.))
+
+x_names = colnames(df)[!str_detect(colnames(df), 'quality|obs')]
+model_formula = str_c(
+  'quality_bin ~ '
+  , str_c(x_names, collapse = ' + ')
+)
+
+epsilon = 0.01 # kryterium stopu 1
+n_iter = 50 # kryterium stopu 2
+
+# Inicjalizacja obiektów do przechowywania wyników
+training_error = Inf #
+training_errors = c()
+df_adaboost = df
+
+set.seed(213)
+
+i = 1 # zliczanie iteracji (dlatego że korzystamy z pętli while)
+while ((training_error > epsilon) & (i < n_iter)) {
+  
+  # Przypisanie równych wag obserwacjom
+  df_adaboost$weights = 1 / nrow(df_adaboost)
+  
+  # Dopasowanie modelu pnia drzewa
+  model_stump = rpart(
+    formula = model_formula
+    , data = df_adaboost
+    , maxdepth = 1
+  )
+  
+  # rpart.plot(model_stump, type = 4)
+  
+  # Prognoza na zbiorze treningowym
+  pred_stump = predict(
+    model_stump
+    , newdata = df_adaboost
+    , type = 'class'
+  )
+  
+  df_adaboost$y_hat = pred_stump
+  df_adaboost$misclass = !(df_adaboost$quality_bin == df_adaboost$y_hat)
+  
+  obs_id = df_adaboost$obs
+  df$y_hat[obs_id] = as.numeric(as.character(pred_stump))
+  training_error = sum(df$y_hat != df$quality_bin) / nrow(df)
+  training_errors[i] = training_error
+  cat('Iteration number: ', i, '. Training error: ', training_error, '.\n', sep = '')
+  
+  total_error = sum(pred_stump != df_adaboost$quality_bin) / nrow(df_adaboost)
+  
+  if (total_error == 0) {
+    break
+  } else {
+    
+    stump_weight = 0.5 * log( (1 - total_error) / total_error )
+    
+    # Aktualizacja wag
+    df_adaboost$weights = ifelse(
+      df_adaboost$misclass
+      , df_adaboost$weights * exp(stump_weight)
+      , df_adaboost$weights * exp(-stump_weight)
+    )
+    
+    # Normalizacja wag
+    df_adaboost$weights = df_adaboost$weights / sum(df_adaboost$weights)
+    
+    # Ważona próbka bootrstrapowa
+    new_indices = sample(
+      1:nrow(df_adaboost)
+      , size = nrow(df_adaboost)
+      , replace = TRUE
+      , prob = df_adaboost$weights
+    )
+    
+    df_adaboost = df_adaboost[new_indices, ]
+    
+    i = i + 1
+    
+  }
+  
+}
+
+plot(1:i, training_errors, type = 'b')
+```
+
+Implementacja algorytmu *AdaBoost* do klasyfikacji z biblioteki *adabag*:
+
+```{r}
+df = read.csv('datasets\\winequality-red.csv')
+df = df %>% mutate(quality_bin = if_else(quality > 5, 1, 0) %>% as.factor())
+
+set.seed(213)
+train_indices = sample(
+  1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+
+model_adaboost = adabag::boosting(
+  quality_bin ~.-quality
+  , data = df_train
+  , mfinal = 100
+)
+
+predict_adaboost = predict(
+  model_adaboost
+  , newdata = df_test
+  , newmfinal = 100
+)
+
+confusionMatrix(as.factor(predict_adaboost$class), df_test$quality_bin)
+```
+
+### Gradient boosted machines (GBM)
+
+Metodę spadku wzdłuż gradientu możemy zaimplementować w sposób następujący (w przypadku problemu regresji):
+
+1.  W pierwszym kroku wszystkim obserwacjom przypisujemy oszacowanie będące średnią wartością zmiennej celu:
+
+    $$
+    f_1(x_i) = \frac{1}{n} \sum_{i=1}^n y_i
+    $$
+
+2.  Liczymy gradient funkcji straty po wartościach $f(x_i)$
+
+    $$
+    -\left[ \frac{\partial L(y_i, f(x_i))}{\partial f(x_i)}  \right]_{f(x_i) = \hat{y}^{(m-1)}(x_i)}
+    $$
+
+    co w przypadku błędu średniokwadratowego sprowadza się do policzenia w $m$-tym kroku reszt modelu $\hat{y}^{(m-1)}(x)$, czyli
+
+    $$
+    r_{im} = y_i - \hat{y}^{(m-1)}(x_i)
+    $$
+
+3.  Na resztach modelu dopasowujemy drzewo regresyjne o ustalonej ilości liści $J$, tworząc obszary $R_{1m}, \dots, R_{Jm}$.
+
+4.  W każdym z obszarów $R_{jm}$ minimalizujemy funkcję straty:
+
+    $$
+    \gamma_{jm} = \arg\min_{\gamma} \sum_{x_i \in R_{jm}} L(y_i, \hat{y}^{(m-1)} (x_i) + \gamma
+    $$
+
+    co w przypadku błędu średniokwadratowego jest po prostu średnią wartością reszt $r_{im}$ należących do obszarzu $R_{jm}$.
+
+5.  Aktualizujemy model:
+
+    $$
+    \hat{y}^{(m)}(x_i) = \hat{y}^{(m-1)}(x_i) + \nu \sum_{j=1}^J \gamma_{jm} \mathbf{1}_{\lbrace x_i \in R_{jm} \rbrace}
+    $$
+
+    gdzie $\nu \in (0,1)$ jest współczynnikiem uczenia (ang. *learning rate*).
+
+6.  Powtarzamy kroki 2-5 zadaną ilość iteracji $M$ albo gdy funkcja straty przestanie maleć.
+
+```{r}
+df = read.csv('datasets\\kc_house_data.csv')
+
+x_names = colnames(df)[!str_detect(colnames(df), 'id|date|price')]
+model_formula = str_c('residuals ~ ', str_c(x_names, collapse = ' + '))
+
+epsilon = 1e5 # kryterium stopu 1
+n_iter = 50 # kryterium stopu 2
+learning_rate = 0.2 # wspólczynnik uczenia
+
+# Inicjalizacja obiektów do przechowywania wyników
+training_errors = numeric(length = n_iter)
+df_model = matrix(NA, nrow = nrow(df), ncol = n_iter)
+
+# Początkowa prognoza czyli średnia wartość zmiennej celu
+df_model[, 1] = mean(df$price)
+training_error = sqrt(mean((df$price - df_model[, 1])^2))
+training_errors[1] = training_error
+
+i = 2
+while ((training_error > epsilon) & (i <= n_iter)) {
+  
+  # Liczymy reszty modelu
+  df$residuals = df$price - df_model[, i-1]
+  
+  # Budujemy drzewo
+  model_stump = rpart(
+    formula = model_formula
+    , data = df
+    , maxdepth = 1
+  )
+  
+  # rpart.plot(model_stump, type = 4)
+  
+  # Liczymy średnią wartość reszt w liściach drzewa
+  pred_stump = predict(
+    model_stump
+    , newdata = df
+  )
+  
+  # Aktualizujemy model
+  df_model[, i] = df_model[, i-1] + learning_rate * pred_stump
+  
+  # Liczymy błąd MSE
+  training_error = sqrt(mean((df$price - df_model[, i])^2))
+  training_errors[i] = training_error
+  
+  cat(
+    'Iteration number: ', i
+    , '. Training error: ', training_errors[i]
+    , '.\n', sep = ''
+  )
+  
+  # Zatrzymujemy algorytm jeśli błąd treningowy wzrośnie
+  if (training_errors[i] > training_errors[i-1]) {
+    break
+  }
+  
+ i = i + 1
+}
+
+plot(2:i, training_errors, type = 'b')
+```
+
+Implementacja algorytmu z biblioteki *gbm*:
+
+```{r}
+df = read.csv('datasets\\kc_house_data.csv') %>%
+  dplyr::select(-id, -date)
+set.seed(213)
+train_indices = sample(
+  1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+m = 1000
+# runtime ~1min (including RMSE calc.)
+model_gbm = gbm::gbm(
+  price ~ .
+  , data = df_train
+  , distribution = 'gaussian'
+  , n.trees = m
+  , cv.folds = 5
+  , train.fraction = 1
+  , bag.fraction = 0.50
+  , shrinkage = 0.2
+  , interaction.depth = 3
+  , n.minobsinnode = 10
+)
+
+# which.min(model_gbm$cv.error)
+# gbm.perf(model_gbm, method = 'test')
+# gbm.perf(model_gbm, method = 'OOB')
+# gbm.perf(model_gbm, method = 'cv')
+
+rmse_gbm_df = tibble(ntrees = 1:m) %>%
+  mutate(train = map_dbl(1:m, ~ predict(
+    model_gbm
+    , newdata = df_train
+    , n.trees = .x) %>% RMSE(obs = df_train$price))
+  ) %>%
+  mutate(test = map_dbl(1:m, ~ predict(
+    model_gbm
+    , newdata = df_test
+    , n.trees = .x) %>% RMSE(obs = df_test$price))
+  ) %>%
+  pivot_longer(cols = 2:3, names_to = 'error', values_to = 'value')
+
+ggplot(rmse_gbm_df, aes(x = ntrees, y = value)) +
+  geom_line(aes(color = error), size = 1)
+```
+
+### Algorytm XGBoost
+
+Na temat algorytmu *XGBoost* można poczytać w oficjalnej dokumentacji: <https://xgboost.readthedocs.io/en/stable/tutorials/model.html>
+
+Obecnie jest to jeden z najlepszych algorytmów jeśli chodzi o minimalizację funkcji straty. W praktyce bardzo często zaczynamy od oszacowania błędu generalizacji z algorytmu *XGBoost*, a następnie stosujemy go jako benchmark jeśli chcemy znaleźć lepsze oszacowanie danego problemu. Ponadto implementacja tego algorytmu jest zoptymalizowana pod kątem przetwarzania wielowątkowego/równoległego, zarządzania pamięcią operacyjną itp, co czyni obliczenia na dużych zbiorach danych efektywnymi.
+
+Oprócz *"ustawień fabrycznych"* mamy możliwość optymalizacji kilku hiperparametrów w tym modelu:
+
+-   $\eta$ (*eta*) - współczynnik uczenia podczas metody stochastycznego spadku wzdłuż gradientu
+
+-   $\gamma$ (*gamma*) - minimalna wartość o jaką musi zmniejszyć się funkcja straty, aby dokonać podział w pojedynczym drzewie decyzyjnym (używane podczas przycinania drzewa)
+
+-   *max_depth* - maksymalna głębokość drzew decyzyjnych
+
+-   *subsample* - ile procent obserwacji zbioru treningowego ma być wylosowane do budowy pojedynczego drzewa decyzyjnego
+
+-   *colsample_bytree* - ile procent atrybutów/kolumn ma być wylosowane do budowy pojedynczego drzewa decyzyjnego
+
+-   $\alpha$ (*alpha*) - regularyzacja normą $L^1$, jeśli podejrzewamy że część atrybutów może być nieistotna (analogicznie jak w regresji lasso)
+
+-   $\lambda$ (*lambda*) - regularyzacja normą $L^2$, jeśli podejrzewamy że część atrybutów może być wzajemnie skorelowana (analogicznie jak w regresji grzbietowej).
+
+```{r}
+?xgboost
+```
+
+Strategia optymalizacji hiperparametrów może wyglądać następująco:
+
+1.  Wybieramy $0.05 \leq \eta \leq 0.3$.
+2.  Metodą walidacji krzyżowej szacujemy optymalną ilość drzew.
+3.  Metodą walidacji krzyżowej szukamy optymalne parametry służące do budowy drzew decyzyjnych: *max_depth*, *gamma*, *subsample*, *colsample_bytree*.
+4.  Jeśli model jest przeszacowany, to szukamy optymalne parametry regularyzacyjne: $\alpha$ oraz $\lambda$. Na przeszacowanie może wskazywać duża różnica między błędem treningowym a błędem walidacji krzyżowej.
+5.  Ewentualne obniżenie $\eta$.
+
+Model z *"ustawieniami fabrycznymi":*
+
+```{r}
+df = read.csv('datasets\\kc_house_data.csv') %>%
+  dplyr::select(-id, -date)
+
+set.seed(213)
+train_indices = sample(
+  1:nrow(df)
+  , size = 0.70 * nrow(df)
+  , replace = FALSE
+)
+
+df_train = df[train_indices, ]
+df_test = df[-train_indices, ]
+
+# Dane muszą być w specjalnym formacie danych dedykowanym algorytmowi XGBoost
+df_train_xgb = df_train %>%
+  select(-price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = df_train$price)
+
+df_test_xgb = df_test %>%
+  select(-price) %>%
+  as.matrix() %>%
+  xgb.DMatrix(label = df_test$price)
+
+m = 1000 # ilosc drzew
+
+model_xgb = xgboost(
+  data = df_train_xgb
+  , params = list(booster = 'gbtree')
+  , nrounds = m
+  , verbose = 1
+)
+
+# Prognoza na zbiorze treningowym i testowym dla różnych ilosci drzew
+rmse_xgb_df = tibble(ntrees = 1:m) %>%
+  
+  mutate(train = map_dbl(1:m, ~ predict(
+    model_xgb
+    , newdata = df_train_xgb
+    , iterationrange = c(1,.x)
+  ) %>% RMSE(obs = df_train$price))) %>%
+  
+  mutate(test = map_dbl(1:m, ~ predict(
+    model_xgb
+    , newdata = df_test_xgb
+    , iterationrange = c(1,.x)
+  ) %>% RMSE(obs = df_test$price))) %>%
+  
+  pivot_longer(
+    cols = 2:3
+    , names_to = 'error'
+    , values_to = 'value'
+  )
+
+ggplot(rmse_xgb_df, aes(x = ntrees, y = value)) +
+  geom_line(aes(color = error), size = 1)
+
+# błąd RMSE
+min(rmse_xgb_df %>% filter(error == 'test') %>% pull(value))
+```
+
+## Bagging vs boosting
+
++----------------------------------+------------------------------------+
+| **Bagging**                      | **Boosting**                       |
++:================================:+:==================================:+
+| drzewa budowane równolegle       | drzewa budowane sekwencyjnie       |
++----------------------------------+------------------------------------+
+| głębokie drzewka (mały bias)     | płytkie drzewa (duży bias)         |
++----------------------------------+------------------------------------+
+| redukowanie wariancji            | redukowanie obciążanie             |
++----------------------------------+------------------------------------+
+| błąd się ustabilizuje (PWL, CTG) | należy zoptymalizowaść ilość drzew |
++----------------------------------+------------------------------------+
+| *ipred::bagging()*               | *adabag::boosting()*               |
+|                                  |                                    |
+| *randomForest::randomForest()*   | *gbm::gbm()*                       |
+|                                  |                                    |
+|                                  | *xgboost::xgboost()*               |
++----------------------------------+------------------------------------+
+
+## Zadania
+
+1.  Skorzystaj z biblioteki `caret` aby zbudować drzewo regresyjne dla zioru danych `datasets\kc_house_data.csv`. Znajdź optymalną głębokość drzewa `maxdepth` następującymi metodami szacowania błędu generalizacji:
+    -   metoda bootstrapowa
+    -   metoda bootstrapowa .632
+    -   5-krotna walidacja krzyżowa
+    -   LOOCV.
+2.  Zastosuj bagging do regresji lasso na zbiorze danych `datasets\kc_house_data.csv`.
+3.  Zastouj algorytm baggingu do zbioru danych `datasets\\winequality-red.csv`. Po ilu iteracjacjach następuje stabilizacja błędu *out-of-bag*?
+4.  Zastosuj algorytm lasów losowych do zbioru danych `datasets\\winequality-red.csv` . Znajdź optymalne wartości parametrów *ntree* oraz *mtry*.
+5.  Stosując model regresji liniowej do zbioru danych `datasets\\gene_expression.csv` mieliśmy duży błąd na zbiorze testowym, który udało się obniżyć za pomocą regresji elastic net. Duży błąd wynikał z dużej wariancji regreji liniowej w przypadku gdy $d>n$. Czy uda się obniżyć błąd testowy regresji liniowej przez obniżenie wariancji za pomocą próbek bootstrapowych, a następnie przez obniżenie korelacji pomiędzy poszczególnymi modelami?
+6.  Sprawdź jak w algorytmie AdaBoost (funkcja `adaboost:boosting()` ) zmienia się błąd testowy w zależności od parametru `mfinal`.
+7.  Zoptymalizuj model *XGBoost* na zbiorze danych `datasets\kc_house_data.csv`
+
+## Literatura
+
+-   ESL - rozdział 8.7, rozdział 9.2, rozdział 10, rozdział 15
+
+-   ITSL - rozdział 8
+
+-   [Przykłady z biblioteki `caret`](https://cran.r-project.org/web/packages/caret/vignettes/caret.html)
+
+-   [Przykłady z biblioteki `gbm`](https://cran.r-project.org/web/packages/gbm/vignettes/gbm.pdf)
+
+-   [Dokumentacja XGBoost](https://xgboost.readthedocs.io/en/stable/index.html)

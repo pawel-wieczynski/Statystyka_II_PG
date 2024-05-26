@@ -1,0 +1,825 @@
+---
+title: "Sieci neuronowe"
+author: "Paweł Wieczyński"
+format: html
+editor: visual
+---
+
+```{r}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(tidyverse, keras, tensorflow, randomForest)
+theme_set(theme_bw())
+options(scipen = 99)
+```
+
+## Wstęp
+
+Sztuczne sieci neuronowe (ANN, *artificial neural network*) to szeroka klasa modeli, która inspirowana jest działaniem ludzkiego mózgu. Ale w przeciwieństwie do ludzkiego mózgu, w przypadku sztucznych sieci mamy solidne podstawy matematyczne, w szczególności [*Universal Approximation Theorem*](https://en.wikipedia.org/wiki/Universal_approximation_theorem)). Typowa sieć składa się z warstw neuronów, w których wykonywane są oblicznie w sposób liniowy, a następnie następuje nieliniowa aktywacja poszczególnych neuronów.
+
+Najpopularniejsze rodzaje sieci neuronowych:
+
+-   FNN (ang. *feedforward neural network*) - sieci ogólnego przeznaczenia, możemy wykorzystać do regresji, klasyfikacji, rozpoznawania wzorców
+
+-   DNN (ang. *deep neural network*) - głębokie sieci neuronowe, tzw. w architekturze sieci jest więcej niż jedna warstwa ukryta
+
+-   CNN (ang. *convolutional neural network*) - sieci wyspecjalizowane w rozpoznawaniu obrazów oraz ich klasyfikacji.
+
+-   RNN (ang. *recurrent neural network*) - w architekturze sieci występuje sprzężenie zwrotne, tzn. sygnał wyjściowy zależy od całej sekwencji sygnałów wejściowych. Wykorzystywane w analizie szeregów czasowych oraz w przetwarzaniu języka naturalnego.
+
+-   LSTM (ang. *long-short term memory*) - szczególny przypadek RNN, gdzie sieć przez długi czas przechowuje kontekst, przydatne np. w tłumaczeniu języków.
+
+-   Autoencoders - sieć uczy się kompresji danych do mniejszej ilości wymiarów oraz dekompresji do oryginalnej postaci wielowymiarowej (podobnie jak PCA albo *t-SNE).*
+
+-   GAN (ang. *generative adversarial networks*) - sieci wyspecjalizowane w tworzeniu obrazów, filmów, dźwięku.
+
+-   Transformery - relatywnie nowe rodzaje sieci na których bazują duże modele językowe, np. Chat-GPT.
+
+## Perceptron
+
+![](images/perceptron.png){fig-align="center" width="459"}
+
+Jest to najprostszy przykład sieci neuronowej oraz element na podstawie którego będziemy budować bardziej skomplikowane sieci. Zasadę działania perceptronu możemy streścić następująco:
+
+1.  Pierwszą warstwę "*neuronów*" nazywamy wartwą wejściową (ang. *input layer*). Przez tę warstwę wprowadzamy do sieci dane treningowe $X$.
+
+2.  Ostatnią warstwę nazywamy warstwą wyjściową (ang. *output layer*). W tej warstwie zostaje liczymy kombinacje liniowe:
+
+    $$
+    z = w_1 x_{1} + \dots w_dx_{d} = \sum_{j=1}^d w_jx_{j}
+    $$
+
+3.  Wywołujemy tzw. funkcję aktywacji:
+
+    $$
+    \hat{y_i} = \begin{cases}
+    0 \quad \text{gdy} \ \sum wx \leq b \\
+    1 \quad \text{gdy} \ \sum wx > b
+    \end{cases}
+    =
+    \begin{cases}
+    0 \quad \text{gdy} \ \sum wx - b \leq 0 \\
+    1 \quad \text{gdy} \ \sum wx - b > 0
+    \end{cases}
+    $$
+
+    Oznacza, to że jeśli kombinacja liniowa wag oraz zmiennych objaśniających przkroczy pewien próg (oznaczamy $b$ i mówimy na to *bias*), to następuje aktywacja neuronu. W tym przypadku jest to zerojedynkowa funkcja aktywacji, później poznamy inne funkcje aktywacji.
+
+4.  Liczymy funkcję straty $L(y, \hat{y}) = (y - \hat{y})^2$.
+
+5.  Aktualizujemy wagi $w_j$ oraz $b$, aby zmniejszyć funkcję straty, za pomocą metody spadku wzdłuż gradientu.
+
+Powyższą procedurę nazywamy algorytmem wstecznej propagacji (ang. *backpropagation*).
+
+W przypadku perceptronu ze schodkową funkcją aktywacji, akutalizacja wag będzie następować na podstawie podchodnych cząstkowych:
+
+$$
+\frac{\partial L}{\partial w} = -2(y - \hat{y})x \\
+\frac{\partial L}{\partial b} = -2(i - \hat{y})
+$$
+
+### Implementacja w `R`
+
+```{r}
+# Definiujemy funkcję aktywacji
+activation_function = function(y_hat) {
+  return(y_hat > 0)
+}
+
+# Dla danego wiersza danych treningowych:
+# - liczymy kombinacje linową
+# - wywołujemy funkcję aktywacji
+forward_propagation = function(row, weights, bias) {
+  y_hat = x[row, ] %*% weights + bias
+  activation_function(y_hat)
+}
+
+# Aktualizacja wag
+backward_propagation = function(y_hat, row) {
+  w[1] <<- w[1] + alpha * (y[row] - y_hat) * x[row, 1]
+  w[2] <<- w[2] + alpha * (y[row] - y_hat) * x[row, 2]
+  b <<- b + alpha * (y[row] - y_hat)
+}
+
+# Prognoza zmiennej celu dla wszystkich wierszy
+prediction = function(x) {
+  y = c()
+  
+  for (i in 1:nrow(x)) {
+    y_pred = x[i, ] %*% w + b
+    y = c(y, activation_function(y_pred))
+  }
+  
+  return(y)
+}
+```
+
+Jak pamiętamy, metoda spadku wzdłuż gradientu działa iteracyjnie. W kontekście sieci neuronowych każdą iterację (tzn. gdy przejdziemy przez wszystkie próbki $X$) nazywamy epoką (ang. *epoch*).
+
+```{r}
+# Zdefiniowanie danych treningowych
+x = as.matrix(iris[1:100, 1:2])
+y = ifelse(iris[1:100, 5] == 'setosa', 1, 0)
+
+set.seed(213)
+alpha = 0.1 # współczynnik uczenia dla metody gradientu
+
+# Inicjalizacja wag w sposób losowy
+w = rnorm(2)
+b = rnorm(1)
+
+# Pętla dla każdej epoki
+for (epoch in 1:100) {
+  
+  # Pętla dla każdego wiersza
+  for (row in 1:nrow(x)) {
+    y_hat = forward_propagation(row, w, b)
+    backward_propagation(y_hat, row)
+  }
+  
+  # Prognoza na całym zbiorze treningowym
+  y_pred = prediction(x)
+  
+  # Oszacowanie funkcji straty na zbiorze treningowym
+  conf_matrix = table(y_pred, y)
+  accuracy = sum(diag(conf_matrix)) / sum(conf_matrix)
+  
+  # Wyświetlanie wyników
+  cat("Epoch: ", epoch, " Accuracy: ", accuracy, "\n")
+}
+
+```
+
+### Logistyczna funkcja aktywacji
+
+W praktyce chemy, aby funkcje aktywacji były ciągłe oraz różniczkowalne. Jedną z często wykorzystywanych funkcji jest funkcja sigmoidalna lub logistyczna:
+
+$$
+\sigma(z) = \frac{1}{1 - e^{-z}}
+$$
+
+Jej pochodna dana jest wzorem:
+
+$$
+\frac{d \sigma}{dz} = \sigma(z) \ (1 -\sigma(z))
+$$
+
+```{r}
+sigmoid = function(z) {
+  return(1 / (1 + exp(-z)))
+}
+
+sigmoid_df = tibble(z = seq(-10, 10, by = 0.01)) %>%
+  mutate(Sigmoid = sigmoid(z)) %>%
+  mutate(Derivative = Sigmoid * (1 - Sigmoid)) %>%
+  pivot_longer(-z)
+
+ggplot(sigmoid_df, aes(x = z, y = value, color = name)) +
+  geom_line(linewidth = 1) +
+  theme(
+    legend.position = c(0.3, 0.7)
+    , legend.title = element_blank()
+  )
+```
+
+Wówczas pochodne cząstkowe do aktualizacji wag będą postaci (*chain-rule*):
+
+$$
+\frac{\partial L}{\partial w} = \frac{\partial L}{\partial \hat{y}} \frac{\partial \hat{y}}{\partial \sigma} \frac{\partial \sigma}{\partial z}   = \\
+= -2(y - \hat{y}) \ \sigma(z) \ (1-\sigma(z))\ x
+$$
+
+```{r}
+backward_propagation = function(y_hat, row) {
+  w[1] <<- w[1] + alpha * (y[row] - y_hat) * x[row, 1] * 
+    sigmoid(y[row]) * (1 - sigmoid(y[row]))
+  w[2] <<- w[2] + alpha * (y[row] - y_hat) * x[row, 2] * 
+    sigmoid(y[row]) * (1 - sigmoid(y[row]))
+  b <<- b + alpha * (y[row] - y_hat) * 
+    sigmoid(y[row]) * (1 - sigmoid(y[row]))
+}
+```
+
+```{r}
+set.seed(213)
+# Inicjalizacja wag w sposób losowy
+w = rnorm(2)
+b = rnorm(1)
+
+# Pętla dla każdej epoki
+for (epoch in 1:100) {
+  
+  # Pętla dla każdego wiersza
+  for (row in 1:nrow(x)) {
+    y_hat = forward_propagation(row, w, b)
+    backward_propagation(y_hat, row)
+  }
+  
+  # Prognoza na całym zbiorze treningowym
+  y_pred = prediction(x)
+  
+  # Oszacowanie funkcji straty na zbiorze treningowym
+  conf_matrix = table(y_pred, y)
+  accuracy = sum(diag(conf_matrix)) / sum(conf_matrix)
+  
+  # Wyświetlanie wyników
+  cat("Epoch: ", epoch, " Accuracy: ", accuracy, "\n")
+}
+```
+
+## Perceptron wielowarstwowy
+
+Siecią neuronową o bardziej skomplikowanej architekturze, złożoną z wielu warstw neuronów jest MLP (ang. *multilayer perceptron*). W poniższym przykładzie rozpatrzymy sieć typu FNN (ang. *feedforward neural network*), gdzie każdy neuron jednej warstwy jest połączony z każdym neurnowej kolejnej warstwy, oraz nie występują żadne sprzężenia zwrotne. Wprowadźmy następujące oznaczenia:
+
+-   $l = 1 \dots, L$ - indeksy warstw ukrytych (ang. *hidden layer*), tzn. dodatkowych warstw obliczeniowych pomiędzy warstwą wejściową a warstwą wyjściową
+
+-   $n_x$ - ilość neuronów w warstwie wejściowej, zazwyczaj równa ilości zmiennych objaśniających $d$
+
+-   $n_h^{[l]}$ - ilość neuronów w $l$-tej warstwie ukrytej (jeśli sieć posiada jedną warstwę ukrytą, to będziemy pomijać górny indeks)
+
+-   $n_y$ - ilość neuronów w warstwie wyjściowej
+
+-   $W^{[l]} = [w_{jk}]$ - macierz wag w $l$-tej warstwie; wymiar macierzy wynosi $n_h^{[l]} \times n_h^{[l-1]}$
+
+-   $b^{[l]} = [b_j]$ - wektor obciążeń w $l$-tej warstwie; wymiar wektora wynosi $n_h^{[l]} \times 1$
+
+-   $g^{[l]}$ - funkcja aktywacji w $l$-tej wartwie
+
+-   $a_j^{[l]} = g^{[l]}( z_j^{[l]}) = g^{[l]} ( \sum_k w^{[l]}_{jk} \ a^{[l-1]}_k + b^{[l]}_j)$ - stan $j$-tego neuronu w $l$-tej warstwie po wywołaniu funkcji aktywacji
+
+W ostatniej warstwie możemy dokonać klasyfikacji:
+
+$$
+\hat{y} = \begin{cases}
+1 \quad \text{gdy} \ a^{[L]} > 0.5 \\
+0 \quad \text{gdy} \ a^{[L]} \leq 0.5 
+\end{cases}
+$$
+
+![](images/ann.png){fig-align="center" width="525"}
+
+```{r}
+y = as.matrix(y, byrow = TRUE)
+n_x = ncol(x) # ilość neuronów wejściowych = ilość kolumn macierzy X
+n_h = 4 # ilość neuronów w warstwie ukrytej
+n_y = ncol(y) # ilość neuronów wyjściowych = ilość kolumn macierzy y
+
+# Inicjalizacja losowych parametrów
+set.seed(213)
+# Wagi między wartwą wejściową a wartwą ukrytą
+w1 = matrix(rnorm(n_x * n_h), nrow = n_h, ncol = n_x)
+b1 = matrix(rep(0, n_h), nrow = n_h)
+b1 = matrix(rep(b1, nrow(x)), nrow = n_h)
+
+# Wagi między wartwą ukrytą a wartwą wyjściową
+w2 = matrix(rnorm(n_h * n_y), nrow = n_y, ncol = n_h)
+b2 = matrix(rep(0, n_y), nrow = n_y)
+b2 = matrix(rep(b2, nrow(x)), nrow = n_y)
+
+learning_rate = 0.1
+for (epoch in 1:100) {
+  
+  # Propagacja z wartwy wejściowej do wartwy ukrytej
+  z1 = w1 %*% t(x) + b1
+  # Aktywacja neuronów w warswie ukrytej
+  a1 = sigmoid(z1)
+  
+  # Propagacja z wartwy ukrytej do wartwy wyjściowej
+  z2 = w2 %*% a1 + b2
+  # Aktywacja neuronów w warswie wyjściowej
+  a2 = sigmoid(z2)
+  
+  # Propagacja wsteczna
+  # Podchodne między warstwą wyjściową a warstwą ukrytą
+  dz2 = a2 - t(y)
+  dw2 = 1/nrow(x) * (dz2 %*% t(a1))
+  db2 = matrix(1/nrow(x) * sum(dz2), nrow = n_y)
+  db2 = matrix(rep(db2, nrow(x)), nrow = n_y)
+
+  # Pochodne między warstwą ukrytą a warstwą wejściową
+  dz1 = (t(w2) %*% dz2) * (1 - a1^2)
+  dw1 = 1/nrow(x) * (dz1 %*% x)
+  db1 = matrix(1/nrow(x) * sum(dz1), nrow = n_h)
+  db1 = matrix(rep(db1, nrow(x)), nrow = n_h)
+  
+  # Aktualizacja wag
+  w1 = w1 - learning_rate * dw1
+  b1 = b1 - learning_rate * db1
+  w2 = w2 - learning_rate * dw2
+  b2 = b2 - learning_rate * db2
+  
+  y_pred = ifelse(a2 > 0.5, 1, 0)
+  conf_matrix = table(y_pred, y)
+  accuracy = sum(diag(conf_matrix)) / sum(conf_matrix)
+  cat("Epoch: ", epoch, " Acurracy: ", accuracy, "\n")
+}
+```
+
+## Biblioteka `keras` oraz `tensorflow`
+
+**Tensorflow** - biblioteka do uczenia maszynowego rozwijana przez firmę Google. Umożliwia wykorzystanie procesorów graficznych GPU do trenowania sieci neuronowych.
+
+**Keras** - API dostępne w różnych językach programowania, umożliwiające szybkie i łatwe tworzenie sieci neuronowych. Biblioteka ta jest zintegrowana z *Tensorflow*.
+
+```{r}
+mnist = dataset_mnist()
+```
+
+Fragment zbioru `mnist` widzieliśmy przy uczeniu nienadzorowanym. Zbiór ten zawiera obrazy cyfr zapisanych odręcznie oraz informację jaka to jest cyfra 0-9. Pełny zbiór danych zawiera:
+
+-   zbiór treningowy - 60000 cyfr zapisanych przez 250 osób
+
+-   zbiór testowy- 10000 cyfr zapisanych przez 250 osób (innych osób niż w zbiorze treningowym!)
+
+```{r}
+# Wczytanie danych
+x_train = mnist$train$x
+y_train = mnist$train$y
+x_test = mnist$test$x
+y_test = mnist$test$y
+
+# Konwersja wymiarów danych
+x_train = array_reshape(x_train, c(nrow(x_train), 784))
+x_test = array_reshape(x_test, c(nrow(x_test), 784))
+
+# Skalowanie danych
+x_train = x_train / 255
+x_test = x_test / 255
+
+# One-hot encoding zmiennej celu
+y_train = to_categorical(y_train, 10)
+y_test = to_categorical(y_test, 10)
+
+```
+
+Wytrenujmy najpierw las losowy, dla porównania skuteczności klasyfikacji (jako ćwiczenie można dopasować model XGBoost):
+
+```{r}
+# runtime 75 sekund
+model_rf = randomForest(
+  x = x_train
+  , y = mnist$train$y %>% as.factor()
+  , ntree = 10
+  , mtry = 200
+)
+
+y_hat_rf = predict(model_rf, newdata = x_test)
+caret::confusionMatrix(
+  y_hat_rf
+  , mnist$test$y %>% as.factor()
+)
+```
+
+Dopasowanie sieci neuronowej FNN za pomocą biblioteki `keras`:
+
+```{r}
+# Inicjalizacja modelu
+# Model sekwencyjny, tzn. będzie dodawać kolejne warstwy
+model = keras_model_sequential()
+
+model %>%
+  # Pierwsza warstwa ukryta - dense oznacza, że każdy neuron jednej warstwy będzie połączony z każdym neuronej kolejnej warstwy
+  layer_dense(
+    units = 256 # ilość neuronów
+    , activation = 'relu' # funkcja aktywacji
+    , input_shape = c(784) # rozmiar danych wejściowych
+  ) %>% 
+  # Losowo usuwamy cześć neuronów, aby zapobiec przetrenowaniu sieci (podobnie do regularyzacji w innych modelach)
+  layer_dropout(rate = 0.4) %>% 
+  # Druga warstwa ukryta
+  # layer_dense(units = 128, activation = 'relu') %>%
+  # layer_dropout(rate = 0.3) %>%
+  # Warstwa wyjściowa
+  layer_dense(units = 10, activation = 'softmax')
+
+summary(model)
+```
+
+```{r}
+?compile.keras.engine.training.Model
+
+# Kompilacja modelu
+model %>% compile(
+  # Rodzaj algorytmu do optymalizacji
+  optimizer = optimizer_rmsprop()
+  # Funkcja straty
+  , loss = 'categorical_crossentropy'
+  # Miary, które będziemy obserwować podczas trenowania sieci
+  , metrics = c('accuracy')
+)
+
+?fit.keras.engine.training.Model
+# Trenowanie modelu
+model %>% fit(
+  x = x_train
+  , y = y_train
+  , epochs = 10
+  , batch_size = 100
+  # Zbiór walidacyjny - 20% obserwacji pominiemy w każdej epoce
+  , validation_split = 0.2
+)
+```
+
+```{r}
+model %>% evaluate(x_test, y_test)
+```
+
+## Ile warstw, ile neuronów?
+
+Kilka ogólnych wskazówek co do architektury sieci typu FNN:
+
+1.  Warstwa wejściowa - ilość neuronów zdeterminowana ilością atrybutów w danych treningowych.
+2.  Warstwa wyjściowa:
+    -   regresja - jeden neuron
+    -   klasyfikacja - jeden neuron
+    -   klasyfikacja z aktywacją *softmax* - jeden neuron na klasę
+3.  Warstwy ukryte:
+    -   W większości problemów wystarczy jedna warstwa ukryta. W rzadkich sytuacjach druga lub trzecia warstwa poprawia jakość prognoz na danych testowych.
+
+    -   Ilość neuronów w warswie ukrytej jest zazwyczaj pomiędzy ilością neuronów w warstwie wejściowej i wyjściowej, np.
+
+        $$
+        n_h = \frac{n_x + n_y}{2}
+        $$
+
+### Funkcje aktywacji
+
+Popularne funkcje aktywacji:
+
+-   Funkcja sigmoidalna - używana najczęściej w problemach binarnej klasyfikacji. Wadą tej funkcji jest tzw. zanikanie gradientu, co może spowalniać proces uczenia sieci <https://en.wikipedia.org/wiki/Vanishing_gradient_problem>
+
+-   Tangens hiperboliczny - analogicznie jak sigmoid, ale wartości w przedziale $(-1, 1)$.
+
+-   ReLU (ang. *rectified linear unit*) - zapobiega problemowi wygaszania gradientu, ale pojawia się problem tzw. *umierania* neuronów.
+
+-   Leaky ReLU - zapobiega *umieraniu* neuronów.
+
+-   Softplus - wygładzona, nieliniowa wersja ReLU.
+
+-   Softmax - używana w problemach klasyfikacji wieloklasowej.
+
+|   Funkcja aktywacji   |                            Wzór                            |
+|:---------------------:|:-----------------------------------------------:|
+|        Sigmoid        |            $\sigma (x) = \frac{1}{1+ \exp(-x)}$            |
+| Tangens hiperboliczny | $\tanh(x) = \frac{\exp(x) - \exp(-x)}{\exp(x) + \exp(-x)}$ |
+|         ReLU          |               $\text{ReLU}(x) = \max(0, x)$                |
+|      Leaky ReLU       |           $\text{LReLU}(x) = \max(\alpha x, x)$            |
+|       Softplus        |            $\text{Softplus(x)} = \ln(1 + e^x)$             |
+|        Softmax        |   $\text{Softmax(x)} = \frac{\exp(x_i)}{\sum \exp(x_j)}$   |
+
+```{r}
+act_df = tibble(x = seq(-5, 5, by = 0.01)) %>%
+  rowwise() %>%
+  mutate(
+    Sigmoid = 1 / (1 + exp(-x))
+    , Tanh = (exp(x) - exp(-x)) / (exp(x) + exp(-x))
+    , ReLU = max(0, x)
+    , LReLU = max(0.5*x, x)
+    , Softplus = log(1 + exp(x))
+  )
+
+ggplot(act_df %>% pivot_longer(-x), aes(x = x, y = value)) +
+  geom_line(aes(color = name), linewidth = 1.25) -> p1
+
+plotly::ggplotly(p1)
+```
+
+## Splotowe sieci neuronowe (CNN)
+
+W przypadku zbioru danych `mnist` dokonaliśmy klasyfikacji obrazów poprzez zakodowanie każdego piksela jako kolumny macierzy, a następnie wytrenowaliśmy sieć neuronową złożoną z dwóch warstw ukrytych. Nie było to skomplikowane, ponieważ obrazy były czarno-białe oraz w małej rozdzielczości (28x28 = 784 pikseli).
+
+Problem pojawia się przy obrazach o większej rozdzielczości (np. 512x512 daje nam ponad 260000 pikseli) oraz kolorowych (3 kanały RGB - czerwień, zieleń, niebieski). W splotowych sieciach neuronowych mamy dodatkowe warstwy wykrywające interesujące wzorce w danych (np. krawędzie obiektów na obrazku) oraz redukujące wymiar danych wejściowych.
+
+Innym problemem występującym w FNN jest wrażliwość na przesunięcia obiektów na obrazie. W CNN dodatkowe warstwy wykrywają korelacje pikseli oraz czynią sieć niewrażliwą na przesunięcia pikseli na obrazie.
+
+Sieć splotowa składa się z następujących warstw:
+
+-   warstwa wejściowa - obrazy czarno-białe lub kolorowe
+
+-   warstwa splotowa zawierająca filtry (typowe wymiary to 3x3 lub 5x5), gdzie wagi dopasowywane są za pomocą algorytmu wstecznej propagacji; po zastosowaniu funkcji aktywacji powstaje tzw. *feature map*, czyli obraz zawierający interesujące fragmenty, np. wyostrzone krawędzie
+
+-   warstwa poolingowa - zazwyczaj tzw. *max pooling*, gdzie wybieramy miejsca, w których warstwa splotowa wykryła najciekawsze wzorce; można też zastosować inne funkcje, np. *mean pooling*
+
+-   warstwa spłaszczająca, czyli zakodowanie danych do formy tabelarycznej
+
+-   dalej warstwy obliczeniowe tak jak w FNN.
+
+### Operacja splotu
+
+Splot (ang. *convolution*) dwóch funkcji $f$ oraz $g$ definiujemy jako operację:
+
+$$ (f  \ * \ g)(x) := \int f(t) \ g(x - t) \ dt  $$
+
+W praktyce dane dysponujemy dyskretną próbką danych. Zdefiniujmy sygnał jako nieskończony ciąg:
+
+$$
+y = [\dots, y_{-2}, y_{-1}, y_0, y_1, y_2, \dots ]
+$$
+
+gdzie dla pewnego $N \in \mathbb{N}$ zachodzi $|k| > N \implies y_k = 0$.
+
+Zdefniujmy filtr (ang. *filter* albo *kernel*) jako ciąg o tej samej własności:
+
+$$
+w = [\dots, w_{-2}, w_{-1}, w_0, w_1, w_2, \dots ]
+$$
+
+Wówczas realizacja splotu $z = y \ * \ x$ dana jest wzorem
+
+$$
+z_j = \sum_{k=-\infty}^{+\infty} y_{j+k}w_k
+$$
+
+Będzie nas interesować dwuwymiarowe sygnały (czyli obrazy 2D). Powyższe wzory można zatem uogólnić następująco: $y = [y_{ij}]$ oraz $w = [w_{ij}]$ są macierzami oraz
+
+$$
+z_{ij} = \sum_{k=-\infty}^{+\infty} \sum_{l=-\infty}^{+\infty} y_{i+k, j+l}w_{k,l}
+$$
+
+[Czym jest operacja splotu (ang. *convolution*)?](https://www.youtube.com/watch?v=KuXjwB4LzSA) Przykład konwolucji na obrazach w załączonym pliku Excel. [Ciekawszy przykład na Wikipedii](https://en.wikipedia.org/wiki/Kernel_(image_processing)).
+
+### Operacja poolingu
+
+Oznaczmy $f:[a,b] \to \mathbb{R}$ będzie funkcją ciągłą i rozpatrzmy podział odcinka na fragmenty równej długości $(b-a)/n$:
+
+$$
+a = x_0 < x_1 < \dots <x_n < b
+$$
+
+Oznaczmy przez $M_i$ maksymalną wartość funkcji $f$ na $i$-tym przedziale:
+
+$$
+M_i = \max_{[x_{i-1}, x_i]} f(x)
+$$
+
+Można udowodnić, że ciąg funkcji
+
+$$
+S_n(x) = \sum_{i=1}^n M_i \ \mathbb{I}_{\lbrace [x_{i-1}, x_i) \rbrace } (x)
+$$
+
+jest zbieżny do funkcji $f$ w sposób jednostajny, gdy $n \to \infty$.
+
+Ponownie, interesować będzie nas dwuwymiarowa wersja, czyli mamy funkcję $f : K \to \mathbb{R}$, gdzie $K$ jest zwartym podzbiorem $\mathbb{R}^2$. Rozważmy pokrycie zbioru $K$:
+
+$$
+K = \bigcup_{i=1}^n A^c_i
+$$
+
+gdzie $A_i$ są zbiorami parami rozłącznymi. Wówczas w każdym podzbiorze wybieramy
+
+$$
+M_i = \max_{A^c_i} f(x)
+$$
+
+### Przykład 1D
+
+```{r}
+# Sygnał sin(x) z losowymi zaburzeniami
+set.seed(213)
+n = 1000 # rozmiar próby
+x = seq(0, 2*pi, length.out = n)
+y = sin(x) + rnorm(n, sd = 0.10)
+
+# Filtr wygładzający
+w = c(
+  rep(0, n/2 - 5)
+  , rep(1/10, 10)
+  , rep(0, n/2 - 5)
+)
+
+# Splot
+y2 = -1*convolve(y, w)
+
+# Max pooling
+stride_width = 100 # szerokość podziału odcinka
+stride_n = n / stride_width # ilość odcinków
+x2 = numeric(length = stride_n)
+M = numeric(length = stride_n)
+
+for (i in 1:length(M)) {
+  lower_index = stride_width * (i-1) + 1
+  upper_index = stride_width * i
+  x2[i] = (lower_index + upper_index) / 2
+  M[i] = max(y2[lower_index:upper_index])
+}
+
+# Wizualizacja
+par(mfcol = c(1,3))
+plot(x, y, type = 'l', main = 'Zaszumiony sygnał')
+plot(x, y2, type = 'l', main = 'Odfiltrowany sygnał')
+plot(x2, M, type = 'l', main = 'Max-pooling')
+
+```
+
+### Przykład `mnist`
+
+Dopasowanie sieci neuronowej CNN na danych `mnist` za pomocą biblioteki `keras`:
+
+```{r}
+# Wczytanie danych
+x_train = mnist$train$x / 255
+x_test = mnist$test$x / 255
+
+model_cnn = keras_model_sequential()
+
+model_cnn %>%
+  # Warstwa splotowa
+  layer_conv_2d(
+    filters = 28 # ilość filtrów, każdy z nich wykryje inne wzorce
+    , kernel_size = c(3, 3) # wymiar filtrów
+    , activation = 'relu'
+    , input_shape = c(28, 28, 1)
+  ) %>%
+  # Warstwa poolingowa
+  layer_max_pooling_2d(pool_size = c(2, 2)) %>%
+  # Warstwa spłaszczająca
+  layer_flatten() %>%
+  # Warstwy ukryte jak w FNN
+  layer_dense(units = 64, activation = 'relu') %>%
+  # Warstwa wyjściowa
+  layer_dense(units = 10, activation = 'softmax')
+
+# Kompilacja modelu
+model_cnn %>% compile(
+  optimizer = optimizer_rmsprop()
+  , loss = 'categorical_crossentropy'
+  , metrics = c("accuracy")
+)
+
+# Trenowanie modelu
+model_cnn %>% fit(
+  x = x_train
+  , y = y_train
+  , epochs = 10
+  , validation_split = 0.2
+)
+
+model_cnn %>% evaluate(x_test, y_test)
+```
+
+### Przykład `cifar`
+
+Zbiór danych `cifar` (<https://www.cs.toronto.edu/~kriz/cifar.html>) zawiera kolorowe zdjęcia wymiaru 32x32 piksele. Każdy obraz przypisany jest do jednej z dziesięciu kategorii (np. pies, kot, koń, żaba).
+
+```{r}
+# Wczytanie danych
+cifar = dataset_cifar10()
+train_images = cifar$train$x / 255
+test_images = cifar$test$x / 255
+
+train_labels = cifar$train$y %>% to_categorical(10)
+test_labels = cifar$test$y %>% to_categorical(10)
+
+# Wyświetlenie kilku przykładowych zdjęć
+# lepiej bedzie widać w okienku plot niż na dole
+par(mfrow = c(3,3))
+set.seed(213)
+
+for (i in 1:9) {
+  index = sample(1:dim(train_images)[1], 1)
+  image = train_images[index,,,]
+  plot(as.raster(image), cex.axis = 0.7)
+}
+```
+
+```{r}
+# Zadanie: dopasuj sieć CNN
+```
+
+## Sieci autoencoders
+
+![](images/autoencoder.png){fig-align="center"}
+
+Ta sieć służy do redukcji wymiarów (podobnie jak wcześniej poznane metody PCA oraz t-SNE). Autoencoder składa się z dwóch sieci FNN:
+
+-   sieć kodująca dane wejściowe $Z = f(X)$
+
+-   sieć dekodująca zakodowane dane $X^\prime = g(Z)$
+
+przy czym chcemy zminimalizować funkcję straty mierzącą rozbieżność między oryginalnymi danymi a odkodowanymi danymi:
+
+$$
+L(X, X^\prime) \longrightarrow \min
+$$
+
+```{r}
+# Wczytujemy zbiór danych - potrzebne nam tylko zmienne objaśniające
+mnist = dataset_mnist()
+x_train = mnist$train$x / 255
+x_test = mnist$test$x / 255
+
+# Zdefiniowanie warstwy wejściowej
+input_layer = layer_input(shape = c(28, 28))
+
+# Zdefiniowanie warstwy kodującej infomację
+encoder = keras_model_sequential() %>%
+  layer_flatten() %>%
+  layer_dense(units = 8, activation = 'relu')
+
+# Zdefiniowanie warstwy dekodującej infomację
+decoder = keras_model_sequential() %>%
+  layer_dense(units = 28*28, activation = 'sigmoid') %>%
+  layer_reshape(target_shape = c(28, 28))
+
+# Zdefiniowanie autoenkodera
+encoded = encoder(input_layer)
+decoded = decoder(encoded)
+autoencoder = keras_model(inputs = input_layer, outputs = decoded)
+
+# Kompilacja modelu
+autoencoder %>%
+  compile(
+    optimizer = optimizer_adam()
+    , loss = 'mse'
+  )
+
+# Trenowanie modelu
+autoencoder %>% fit(
+  x = x_train
+  , y = x_train
+  , epochs = 5
+  , validation_data = list(x_test, x_test)
+)
+```
+
+```{r}
+# Odkodowanie obrazów testowych
+decoded_images = autoencoder %>% predict(x_test[sample_index,,])
+
+# Wizualizacja wyników
+# Losujemy kilka przykładowych obrazów
+set.seed(213)
+sample_index = sample(1:dim(x_test)[1], 5, replace = FALSE)
+
+par(mfcol = c(2, 5))
+for (i in 1:length(sample_index)) {
+  
+  img_original = x_test[sample_index[i],,] %>% 
+    apply(2, rev) %>% 
+    t
+  
+  img_decoded = decoded_images[i,,] %>% 
+    apply(2, rev) %>% 
+    t
+  
+  image(
+    x = 1:28, y = 1:28, z = img_original
+    , xaxt = 'n', yaxt = 'n', xlab = '', ylab = ''
+    )
+  
+  image(
+    x = 1:28, y = 1:28, z = img_decoded
+    , xaxt = 'n', yaxt = 'n', xlab = '', ylab = ''
+  )
+}
+
+```
+
+## Zadania
+
+1.  Dopasuj sieć neuronową z jedną warstwą ukrytą na zbiorze danych `datasets\\kc_house_data.csv`.
+
+2.  Znajdź architekturę sieci dla danych `datasets\\kc_house_data.csv`, tak aby błąd testowy był mniejszy niż w przypadku algorytmu XGBoost (wtedy było to około 131k).
+
+3.  Dopasuj sieć neuronową z jedną warstwą ukrytą na zbiorze danych `datasets\\winequality-red.csv`
+
+    -   prognozując czy wino jest *good/bad*
+    -   prognozując jakość wina na skali 1-10.
+
+4.  Dopasuj sieć neuronową na danych `cifar`, aby uzyskać skuteczność na zbiorze testowym powyżej 90%.
+
+5.  Zbadaj zachowanie poniższych filtrów:
+
+    $$
+    K_1 = \begin{bmatrix}
+    1 & 2 & 1 \\
+    0 & 0 & 0 \\
+    -1 & -2 & -1
+    \end{bmatrix}
+    $$
+
+    $$
+    K_2 = \begin{bmatrix}
+    1/16 & 1/8 & 1/16 \\
+    1/8 & 1/4 & 1/8 \\
+    1/16 & 1/8 & 1/16
+    \end{bmatrix}
+    $$
+
+    $$
+    K_3 = \begin{bmatrix}
+    0 & -1 & 0 \\
+    -1 & 5 & -1 \\
+    0 & -1 & 0
+    \end{bmatrix}
+    $$
+
+## Literatura
+
+-   ESL - rozdział 11
+
+-   <https://ajaytech.co/perceptron-from-scratch/>
+
+-   [Tutoriale do biblioteki `keras` w języku `R`](https://cran.r-project.org/web/packages/keras/)
+
+-   [Dokumentacja `Tensorflow`](https://www.tensorflow.org/guide)
